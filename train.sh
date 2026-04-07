@@ -1,378 +1,124 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
+# VQ-VAE Training Script on AMEX Time-Series Data
+# Trains a Vector Quantized Variational Autoencoder with optional classification
 
-################################################################################
-# VQ-VAE Training Script
-# 
-# This script provides convenient training modes and configurations for the VQ-VAE
-# model on AMEX time-series data.
-#
-# Usage:
-#   ./train.sh [MODE] [OPTIONS]
-#
-# Modes:
-#   debug       - Quick training on small dataset for debugging
-#   quick       - Quick training with reduced epochs
-#   full        - Full training with default settings
-#   custom      - Custom training with user-provided arguments
-#
-# Examples:
-#   ./train.sh debug
-#   ./train.sh full --use-wandb
-#   ./train.sh custom --num-epochs 100 --batch-size 64 --use-wandb
-#
-################################################################################
+# ============================================================================
+# Configuration Variables
+# ============================================================================
 
-set -e  # Exit on error
+# Dataset Paths and Configuration
+DATA_DIR="/scratch/s25090/Amex_data"
+TRAIN_DATA="${DATA_DIR}/train_data.csv"
+TRAIN_LABELS="${DATA_DIR}/train_labels.csv"
+DB_PATH="${DATA_DIR}/amex.db"
+MAX_SEQ_LEN=13
+BATCH_SIZE=32
+NUM_WORKERS=4
+NUM_EPOCHS=20
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'  # No Color
+# Model Architecture Configuration
+INPUT_DIM=512
+NUM_EMBEDDINGS=512
+EMBEDDING_DIM=64
+COMMITMENT_COST=0.25
+ENCODER_LAYERS=2
+ENCODER_HEADS=8
+DECODER_LAYERS=2
+DECODER_HEADS=8
+DROPOUT=0.1
+ENCODER_CLASS_TOKEN=false
+CLASS_PROJ_DIM=1
 
-# Configuration
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON_SCRIPT="$SCRIPT_DIR/train_vq_vae.py"
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-DEFAULT_OUTPUT_DIR="$SCRIPT_DIR/checkpoints_${TIMESTAMP}"
+# Training Hyperparameters
+LEARNING_RATE=1e-3
+WEIGHT_DECAY=1e-4
+VAL_BATCH_SIZE=64
+LOG_FREQ=10
+CHECKPOINT_FREQ=1
+SAVE_BEST=true
+SEED=42
 
-# Print colored output
-print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
+# Loss Weights
+RECONSTRUCTION_LOSS_WEIGHT=1.0
+COMMITMENT_LOSS_WEIGHT=0.25
+CLASSIFICATION_LOSS_WEIGHT=0.5
 
-print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
+# Classification Configuration
+CLASSIFICATION_ENABLED=true
 
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
+# Output and Logging
+CHECKPOINT_DIR="/scratch/s25090/vq_vae/checkpoints_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "${CHECKPOINT_DIR}"
 
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
+# Weights & Biases Configuration
+WANDB_PROJECT="vq-vae-amex"
+WANDB_ENTITY=""
+WANDB_RUN_NAME="vq_vae_run_$(date +%Y%m%d_%H%M%S)"
+WANDB_SAVE_DIR="${CHECKPOINT_DIR}/wandb"
+WANDB_NOTES=""
+WANDB_TAGS=()
+mkdir -p "${WANDB_SAVE_DIR}"
 
-# Check if Python script exists
-check_script_exists() {
-    if [ ! -f "$PYTHON_SCRIPT" ]; then
-        print_error "Training script not found: $PYTHON_SCRIPT"
-        exit 1
-    fi
-}
+# Device Configuration
+DEVICE="cuda"
+USE_FP16=false
 
-# Check Python and dependencies
-check_dependencies() {
-    print_info "Checking Python and dependencies..."
-    
-    if ! command -v python &> /dev/null; then
-        print_error "Python is not installed"
-        exit 1
-    fi
-    
-    python_version=$(python --version 2>&1 | awk '{print $2}')
-    print_info "Using Python $python_version"
-    
-    # Check for PyTorch
-    if ! python -c "import torch" 2>/dev/null; then
-        print_warning "PyTorch not detected. Please install it before training."
-        exit 1
-    fi
-    
-    # Check for wandb (optional)
-    if python -c "import wandb" 2>/dev/null; then
-        print_info "Wandb is available"
-    else
-        print_warning "Wandb not installed (optional, but needed for --use-wandb)"
-    fi
-}
+# Debugging Configuration
+DEBUG=false
+DEBUG_SIZE=100
+RESUME_FROM=""
 
-# Show usage information
-show_usage() {
-    cat << EOF
-${BLUE}VQ-VAE Training Script${NC}
+# ============================================================================
+# Build Command
+# ============================================================================
 
-${GREEN}Usage:${NC}
-  $0 [MODE] [OPTIONS]
+cd /home/chaitanya-kohli/Amex/TimeVQDM
 
-${GREEN}Modes:${NC}
-  debug       Quick debugging with small dataset (100 samples, 2 epochs)
-  quick       Quick training (500 samples, 5 epochs)
-  full        Full training with default settings
-  custom      Custom training with arbitrary arguments
-  
-${GREEN}Model Hyperparameters:${NC}
-  --input-dim DIM              Input feature dimension (default: 512)
-  --num-embeddings N           Number of codebook embeddings (default: 512)
-  --embedding-dim DIM          Dimension of codebook embeddings (default: 64)
-  --commitment-cost COST       Commitment cost for VQ loss (default: 0.25)
-  --encoder-num-layers N       Number of encoder transformer layers (default: 2)
-  --encoder-num-heads N        Number of encoder attention heads (default: 8)
-  --decoder-num-layers N       Number of decoder transformer layers (default: 2)
-  --decoder-num-heads N        Number of decoder attention heads (default: 8)
-  --dropout RATE               Dropout rate for all layers (default: 0.1)
+export PYTHONPATH="/home/chaitanya-kohli/Amex/TimeVQDM:${PYTHONPATH:-}"
 
-${GREEN}Training Hyperparameters:${NC}
-  --batch-size N               Batch size for training (default: 32)
-  --val-batch-size N           Batch size for validation (default: 64)
-  --num-epochs N               Number of training epochs (default: 20)
-  --learning-rate LR           Learning rate (default: 0.001)
-  --weight-decay WD            Weight decay for optimizer (default: 0.0001)
-  --num-workers N              Number of data loading workers (default: 4)
-  --reconstruction-loss-weight W    Weight for reconstruction loss (default: 1.0)
-  --commitment-loss-weight W        Weight for commitment loss (default: 0.25)
+CUDA_VISIBLE_DEVICES=0 python train_vq_vae.py \
+    --output-dir "${CHECKPOINT_DIR}" \
+    --data-dir "${DATA_DIR}" \
+    --train-data "${TRAIN_DATA}" \
+    --train-labels "${TRAIN_LABELS}" \
+    --db-path "${DB_PATH}" \
+    --max-seq-len ${MAX_SEQ_LEN} \
+    --input-dim ${INPUT_DIM} \
+    --num-embeddings ${NUM_EMBEDDINGS} \
+    --embedding-dim ${EMBEDDING_DIM} \
+    --commitment-cost ${COMMITMENT_COST} \
+    --encoder-num-layers ${ENCODER_LAYERS} \
+    --encoder-num-heads ${ENCODER_HEADS} \
+    --decoder-num-layers ${DECODER_LAYERS} \
+    --decoder-num-heads ${DECODER_HEADS} \
+    --dropout ${DROPOUT} \
+    $([ "${ENCODER_CLASS_TOKEN}" = true ] && echo "--encoder_class_token") \
+    --encoder-class-proj-dim ${CLASS_PROJ_DIM} \
+    --batch-size ${BATCH_SIZE} \
+    --val-batch-size ${VAL_BATCH_SIZE} \
+    --num-epochs ${NUM_EPOCHS} \
+    --learning-rate ${LEARNING_RATE} \
+    --weight-decay ${WEIGHT_DECAY} \
+    --num-workers ${NUM_WORKERS} \
+    --seed ${SEED} \
+    --log-freq ${LOG_FREQ} \
+    --checkpoint-freq ${CHECKPOINT_FREQ} \
+    --reconstruction-loss-weight ${RECONSTRUCTION_LOSS_WEIGHT} \
+    --commitment-loss-weight ${COMMITMENT_LOSS_WEIGHT} \
+    --classification-loss-weight ${CLASSIFICATION_LOSS_WEIGHT} \
+    $([ "${SAVE_BEST}" = true ] && echo "--save-best") \
+    --device ${DEVICE} \
+    $([ "${USE_FP16}" = true ] && echo "--fp16") \
+    $([ "${DEBUG}" = true ] && echo "--debug") \
+    $([ "${DEBUG}" = true ] && echo "--debug-size ${DEBUG_SIZE}") \
+    $([ -n "${RESUME_FROM}" ] && echo "--resume-from ${RESUME_FROM}") \
+    --wandb-project "${WANDB_PROJECT}" \
+    $([ -n "${WANDB_ENTITY}" ] && echo "--wandb-entity '${WANDB_ENTITY}'") \
+    $([ -n "${WANDB_NOTES}" ] && echo "--wandb-notes '${WANDB_NOTES}'") \
+    $([ ${#WANDB_TAGS[@]} -gt 0 ] && echo "--wandb-tags ${WANDB_TAGS[@]}") \
+    --wandb-run-name "${WANDB_RUN_NAME}" \
+    --wandb-save-dir "${WANDB_SAVE_DIR}" \
+    --use-wandb
 
-${GREEN}Logging and Checkpointing:${NC}
-  --output-dir PATH            Directory to save checkpoints (default: auto)
-  --checkpoint-freq N          Save checkpoint every N epochs (default: 1)
-  --log-freq N                 Log metrics every N batches (default: 10)
-  --save-best                  Save best model based on validation loss
-
-${GREEN}Weights & Biases Logging:${NC}
-  --use-wandb                  Enable Weights & Biases logging
-  --wandb-project NAME         Wandb project name (default: vq-vae-amex)
-  --wandb-tags TAG1 TAG2       Add tags to Wandb run
-  --wandb-notes NOTES          Notes for the Wandb run
-
-${GREEN}Other Options:${NC}
-  --device cuda|cpu            Device to use (default: cuda)
-  --resume-from PATH           Resume from checkpoint
-  --seed SEED                  Random seed (default: 42)
-  --presets                    Show hyperparameter tuning presets
-  --help                       Show this help message
-
-${GREEN}Examples:${NC}
-  # Debug mode with custom model
-  $0 debug --num-embeddings 256 --embedding-dim 128 --dropout 0.2
-  
-  # Full training with tuned hyperparameters
-  $0 full --learning-rate 5e-4 --batch-size 64 --num-epochs 50 --save-best
-  
-  # Custom with specific model and training config
-  $0 custom \\
-    --encoder-num-layers 4 --encoder-num-heads 16 \\
-    --decoder-num-layers 4 --decoder-num-heads 16 \\
-    --batch-size 48 --learning-rate 2e-4 \\
-    --num-epochs 100 --use-wandb --wandb-tags large-model
-  
-  # Advanced tuning with Wandb
-  $0 full \\
-    --num-embeddings 1024 --embedding-dim 128 \\
-    --dropout 0.15 --learning-rate 5e-4 \\
-    --reconstruction-loss-weight 1.5 \\
-    --use-wandb --wandb-tags tuning-v1
-
-EOF
-}
-
-# Run debug mode
-run_debug() {
-    print_info "Running in DEBUG mode"
-    print_info "Base Settings: 100 samples, 2 epochs, batch_size=16"
-    
-    if [ $# -gt 0 ]; then
-        print_info "Additional arguments: $@"
-    fi
-    
-    python "$PYTHON_SCRIPT" \
-        --output-dir "$DEFAULT_OUTPUT_DIR" \
-        --debug \
-        --debug-size 100 \
-        --batch-size 16 \
-        --num-epochs 2 \
-        --num-workers 2 \
-        --log-freq 5 \
-        "$@"
-}
-
-# Run quick mode
-run_quick() {
-    print_info "Running in QUICK mode"
-    print_info "Base Settings: 500 samples, 5 epochs, batch_size=32"
-    
-    if [ $# -gt 0 ]; then
-        print_info "Additional arguments: $@"
-    fi
-    
-    python "$PYTHON_SCRIPT" \
-        --output-dir "$DEFAULT_OUTPUT_DIR" \
-        --debug \
-        --debug-size 500 \
-        --batch-size 32 \
-        --num-epochs 5 \
-        --num-workers 4 \
-        --log-freq 10 \
-        "$@"
-}
-
-# Run full training
-run_full() {
-    print_info "Running in FULL mode"
-    print_info "Base Settings: Full dataset, 20 epochs, batch_size=32"
-    
-    if [ $# -gt 0 ]; then
-        print_info "Additional arguments: $@"
-    fi
-    
-    python "$PYTHON_SCRIPT" \
-        --output-dir "$DEFAULT_OUTPUT_DIR" \
-        --batch-size 32 \
-        --num-epochs 20 \
-        --num-workers 4 \
-        --log-freq 10 \
-        --save-best \
-        "$@"
-}
-
-# Run custom training
-run_custom() {
-    print_info "Running in CUSTOM mode"
-    
-    if [ $# -gt 0 ]; then
-        print_info "Arguments: $@"
-    fi
-    
-    python "$PYTHON_SCRIPT" \
-        --output-dir "$DEFAULT_OUTPUT_DIR" \
-        "$@"
-}
-
-# Show hyperparameter tuning presets
-show_presets() {
-    cat << EOF
-${BLUE}VQ-VAE Hyperparameter Tuning Presets${NC}
-
-${GREEN}Small Model:${NC}
-./train.sh full \\
-  --num-embeddings 256 --embedding-dim 32 \\
-  --encoder-num-layers 1 --encoder-num-heads 4 \\
-  --decoder-num-layers 1 --decoder-num-heads 4 \\
-  --dropout 0.05 --batch-size 64
-
-${GREEN}Large Model:${NC}
-./train.sh full \\
-  --num-embeddings 1024 --embedding-dim 128 \\
-  --encoder-num-layers 4 --encoder-num-heads 16 \\
-  --decoder-num-layers 4 --decoder-num-heads 16 \\
-  --dropout 0.2 --batch-size 32
-
-${GREEN}Conservative Learning:${NC}
-./train.sh full \\
-  --learning-rate 5e-4 --weight-decay 5e-4 \\
-  --commitment-loss-weight 0.5 \\
-  --batch-size 32 --num-epochs 50
-
-${GREEN}Aggressive Learning:${NC}
-./train.sh full \\
-  --learning-rate 2e-3 --weight-decay 1e-5 \\
-  --commitment-loss-weight 0.1 \\
-  --batch-size 64 --num-epochs 20
-
-${GREEN}Balanced:${NC}
-./train.sh full \\
-  --num-embeddings 512 --embedding-dim 64 \\
-  --encoder-num-layers 2 --encoder-num-heads 8 \\
-  --decoder-num-layers 2 --decoder-num-heads 8 \\
-  --learning-rate 1e-3 --batch-size 32 \\
-  --dropout 0.1 --num-epochs 30 --save-best
-
-${GREEN}Memory-Efficient:${NC}
-./train.sh full \\
-  --num-embeddings 256 --embedding-dim 48 \\
-  --encoder-num-layers 1 --encoder-num-heads 4 \\
-  --decoder-num-layers 1 --decoder-num-heads 4 \\
-  --batch-size 64 --num-workers 2
-
-${GREEN}Reconstruction-Focused:${NC}
-./train.sh full \\
-  --reconstruction-loss-weight 2.0 \\
-  --commitment-loss-weight 0.1 \\
-  --learning-rate 5e-4 --batch-size 32
-
-${GREEN}Quantization-Focused:${NC}
-./train.sh full \\
-  --reconstruction-loss-weight 0.5 \\
-  --commitment-loss-weight 0.5 \\
-  --learning-rate 1e-3 --batch-size 32
-
-${BLUE}Usage:${NC}
-Copy and paste any preset, then add your own options or use with --use-wandb
-
-EOF
-}
-
-# Main script logic
-main() {
-    # Show help if requested
-    if [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
-        show_usage
-        exit 0
-    fi
-    
-    # Show presets if requested  
-    if [ "$1" == "--presets" ]; then
-        show_presets
-        exit 0
-    fi
-    
-    # Show help if no arguments
-    if [ $# -eq 0 ]; then
-        show_usage
-        exit 0
-    fi
-    
-    # Check prerequisites
-    check_script_exists
-    check_dependencies
-    
-    # Get mode (default is 'full')
-    MODE="${1:-full}"
-    shift || true  # Shift remaining arguments
-    
-    print_info "=========================================="
-    print_info "VQ-VAE Training Script"
-    print_info "=========================================="
-    print_info "Mode: $MODE"
-    print_info "Output Directory: $DEFAULT_OUTPUT_DIR"
-    print_info "Timestamp: $TIMESTAMP"
-    print_info ""
-    
-    # Create output directory
-    mkdir -p "$DEFAULT_OUTPUT_DIR"
-    
-    # Run appropriate mode
-    case "$MODE" in
-        debug)
-            run_debug "$@"
-            ;;
-        quick)
-            run_quick "$@"
-            ;;
-        full)
-            run_full "$@"
-            ;;
-        custom)
-            run_custom "$@"
-            ;;
-        *)
-            print_error "Unknown mode: $MODE"
-            echo ""
-            show_usage
-            exit 1
-            ;;
-    esac
-    
-    # Check exit status
-    if [ $? -eq 0 ]; then
-        print_success "Training completed successfully!"
-        print_info "Results saved to: $DEFAULT_OUTPUT_DIR"
-        exit 0
-    else
-        print_error "Training failed with exit code $?"
-        exit 1
-    fi
-}
-
-# Run main function with all arguments
-main "$@"
+echo "Training completed! Checkpoints saved to ${CHECKPOINT_DIR}"

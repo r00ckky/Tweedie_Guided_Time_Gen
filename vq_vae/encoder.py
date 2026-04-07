@@ -124,7 +124,8 @@ class TransformerEncoder(nn.Module):
         
         # Project to embedding dimension
         self.output_projection = nn.Linear(hidden_dim, embedding_dim)
-        self.class_proj = nn.Linear(hidden_dim, class_proj_dim) if class_token and class_proj_dim is not None else None
+        # Classification head projects from embedding_dim (not hidden_dim) after output_projection
+        self.class_proj = nn.Linear(embedding_dim, class_proj_dim) if class_token and class_proj_dim is not None else None
     
     def forward(
             self, 
@@ -137,37 +138,52 @@ class TransformerEncoder(nn.Module):
         
         Args:
             x: Input tensor of shape (batch_size, seq_len, input_dim)
+            y: Optional target tensor for classification (batch_size,)
             mask: Optional attention mask
         
         Returns:
-            Encoded tensor of shape (batch_size, seq_len, embedding_dim)
+            z: Encoded tensor of shape (batch_size, seq_len, embedding_dim)
+            cls_logits: Classification logits of shape (batch_size, class_proj_dim), or None
+            cls_loss: Classification loss (None if y not provided or no classification head)
         """
         # Project input to hidden dimension
         x = self.input_projection(x)
+        batch_size = x.size(0)
+        
         if self.cls_token is not None:
-            x = torch.cat([self.cls_token.expand(x.size(0), -1, -1), x], dim=1)  # Add CLS token
+            cls_token_expanded = self.cls_token.expand(batch_size, -1, -1)
+            x = torch.cat([cls_token_expanded, x], dim=1)  # Add CLS token
         
         for block in self.transformer_blocks:
             x = block(x, mask=mask)
         
         # Project to embedding dimension
         x = self.output_projection(x)
+        
+        # Extract classification tokens if needed
         if self.class_proj is not None:
-            x_cls = x[:, 0]  # Extract CLS token representation
-            x_toks = x[:, 1:]  # Extract token representations
-            x_cls = self.class_proj(x_cls)
-            if x_cls.shape[-1] == 1:
-                x_cls = x_cls.squeeze(-1)  # Remove last dimension if it's 1
-                x_cls = F.sigmoid(x_cls)  # Apply sigmoid for binary classification
-                if y is not None:
+            cls_token_hidden = x[:, 0]  # Extract CLS token: (batch_size, embedding_dim)
+            z = x[:, 1:]  # Keep all sequence tokens: (batch_size, seq_len, embedding_dim)
+            
+            # Apply classification projection
+            cls_logits = self.class_proj(cls_token_hidden)  # (batch_size, class_proj_dim)
+            cls_loss = None
+            
+            # Compute loss if targets provided
+            if y is not None:
+                if cls_logits.shape[-1] == 1:
+                    # Binary classification
+                    cls_logits_squeezed = cls_logits.squeeze(-1)  # (batch_size,)
+                    cls_logits_prob = torch.sigmoid(cls_logits_squeezed)  # Apply sigmoid
                     loss_fn = nn.BCELoss()
-                    loss = loss_fn(x_cls, y.float())
-                    return x_cls, x_toks, loss
-            else:
-                x_cls = F.softmax(x_cls, dim=-1)  # Apply softmax for multi-class classification
-                if y is not None:
+                    cls_loss = loss_fn(cls_logits_prob, y.float())
+                else:
+                    # Multi-class classification
+                    cls_logits_prob = F.softmax(cls_logits, dim=-1)  # Apply softmax
                     loss_fn = nn.CrossEntropyLoss()
-                    loss = loss_fn(x_cls, y)
-                    return x_cls, x_toks, loss
-            return x_cls, x_toks
-        return x_toks
+                    cls_loss = loss_fn(cls_logits, y.long())
+            
+            return z, cls_logits, cls_loss
+        
+        # No classification head - return full sequence
+        return x, None, None

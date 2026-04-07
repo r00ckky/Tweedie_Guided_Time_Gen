@@ -150,6 +150,8 @@ def create_model_and_optimizer(args, logger):
         num_embeddings=args.num_embeddings,
         embedding_dim=args.embedding_dim,
         commitment_cost=args.commitment_cost,
+        encoder_class_token=args.encoder_class_token,
+        encoder_class_proj_dim=args.encoder_class_proj_dim,
         encoder_num_layers=args.encoder_num_layers,
         encoder_num_heads=args.encoder_num_heads,
         encoder_dropout=args.dropout,
@@ -160,8 +162,10 @@ def create_model_and_optimizer(args, logger):
         weight_decay=args.weight_decay,
         reconstruction_loss_weight=args.reconstruction_loss_weight,
         commitment_loss_weight=args.commitment_loss_weight,
+        classification_loss_weight=args.classification_loss_weight,
         device=args.device,
         seed=args.seed,
+        max_seq_length=args.max_seq_len,
     )
     
     logger.info(f"Model config:\n{config}")
@@ -198,17 +202,20 @@ def train_epoch(model, train_loader, optimizer, device, logger, log_freq, wandb_
     total_loss = 0.0
     total_recon_loss = 0.0
     total_vq_loss = 0.0
+    total_cls_loss = 0.0
     num_batches = 0
     
     pbar = tqdm(train_loader, desc="Training", leave=True)
     
     for batch_idx, batch in enumerate(pbar):
         # Get batch data
-        x = batch.to(device)  # Shape: (batch_size, seq_len, input_dim)
+        x, y = batch  # Both shape: (batch_size, seq_len, input_dim/1)
+        x = x.to(device)  # Shape: (batch_size, seq_len, input_dim)
+        y = y.to(device)  # Shape: (batch_size,)
         
         # Forward pass
         optimizer.zero_grad()
-        output = model(x)
+        output = model(x, y)
         
         loss = output["total_loss"]
         
@@ -221,37 +228,47 @@ def train_epoch(model, train_loader, optimizer, device, logger, log_freq, wandb_
         batch_total_loss = output["total_loss"].detach().item()
         batch_recon_loss = output["reconstruction_loss"].detach().item()
         batch_vq_loss = output["vq_loss"].detach().item()
+        batch_cls_loss = output["classification_loss"].detach().item() if output["classification_loss"] is not None else 0.0
         
         total_loss += batch_total_loss
         total_recon_loss += batch_recon_loss
         total_vq_loss += batch_vq_loss
+        total_cls_loss += batch_cls_loss
         num_batches += 1
         
         # Log to wandb at batch level
         if wandb_run is not None and (batch_idx + 1) % log_freq == 0:
             step = epoch * len(train_loader) + batch_idx if epoch is not None else batch_idx
-            wandb_run.log({
+            log_dict = {
                 "train/batch_total_loss": batch_total_loss,
                 "train/batch_reconstruction_loss": batch_recon_loss,
                 "train/batch_vq_loss": batch_vq_loss,
                 "train/batch": step,
-            })
+            }
+            if output["classification_loss"] is not None:
+                log_dict["train/batch_classification_loss"] = batch_cls_loss
+            wandb_run.log(log_dict)
         
         if (batch_idx + 1) % log_freq == 0:
             avg_loss = total_loss / num_batches
             avg_recon = total_recon_loss / num_batches
             avg_vq = total_vq_loss / num_batches
+            avg_cls = total_cls_loss / num_batches if total_cls_loss > 0 else 0
             
-            pbar.set_postfix({
+            postfix_dict = {
                 "loss": f"{avg_loss:.4f}",
                 "recon": f"{avg_recon:.4f}",
                 "vq": f"{avg_vq:.4f}",
-            })
+            }
+            if avg_cls > 0:
+                postfix_dict["cls"] = f"{avg_cls:.4f}"
+            pbar.set_postfix(postfix_dict)
     
     return {
         "loss": total_loss / num_batches,
         "reconstruction_loss": total_recon_loss / num_batches,
         "vq_loss": total_vq_loss / num_batches,
+        "classification_loss": total_cls_loss / num_batches if total_cls_loss > 0 else 0,
     }
 
 
@@ -261,37 +278,45 @@ def validate(model, val_loader, device, logger, wandb_run=None, epoch=None):
     total_loss = 0.0
     total_recon_loss = 0.0
     total_vq_loss = 0.0
+    total_cls_loss = 0.0
     num_batches = 0
     
     with torch.no_grad():
         pbar = tqdm(val_loader, desc="Validating", leave=True)
         
         for batch_idx, batch in enumerate(pbar):
-            x = batch.to(device)
+            x, y = batch  # Both shape: (batch_size, seq_len, input_dim/1)
+            x = x.to(device)
+            y = y.to(device)
             
-            output = model(x)
+            output = model(x, y)
             
             batch_total_loss = output["total_loss"].item()
             batch_recon_loss = output["reconstruction_loss"].item()
             batch_vq_loss = output["vq_loss"].item()
+            batch_cls_loss = output["classification_loss"].item() if output["classification_loss"] is not None else 0.0
             
             total_loss += batch_total_loss
             total_recon_loss += batch_recon_loss
             total_vq_loss += batch_vq_loss
+            total_cls_loss += batch_cls_loss
             num_batches += 1
             
-            pbar.set_postfix({
-                "val_loss": f"{total_loss / num_batches:.4f}",
-            })
+            postfix = {"val_loss": f"{total_loss / num_batches:.4f}"}
+            if total_cls_loss > 0:
+                postfix["val_cls"] = f"{total_cls_loss / num_batches:.4f}"
+            pbar.set_postfix(postfix)
     
     avg_loss = total_loss / num_batches
     avg_recon_loss = total_recon_loss / num_batches
     avg_vq_loss = total_vq_loss / num_batches
+    avg_cls_loss = total_cls_loss / num_batches if total_cls_loss > 0 else 0.0
     
     return {
         "loss": avg_loss,
         "reconstruction_loss": avg_recon_loss,
         "vq_loss": avg_vq_loss,
+        "classification_loss": avg_cls_loss,
     }
 
 
@@ -387,14 +412,18 @@ def main():
         logger.info(f"\nTrain Loss: {train_metrics['loss']:.6f}")
         logger.info(f"  - Reconstruction: {train_metrics['reconstruction_loss']:.6f}")
         logger.info(f"  - VQ Loss: {train_metrics['vq_loss']:.6f}")
+        if train_metrics.get('classification_loss', 0) > 0:
+            logger.info(f"  - Classification Loss: {train_metrics['classification_loss']:.6f}")
         logger.info(f"Val Loss: {val_metrics['loss']:.6f}")
         logger.info(f"  - Reconstruction: {val_metrics['reconstruction_loss']:.6f}")
         logger.info(f"  - VQ Loss: {val_metrics['vq_loss']:.6f}")
+        if val_metrics.get('classification_loss', 0) > 0:
+            logger.info(f"  - Classification Loss: {val_metrics['classification_loss']:.6f}")
         logger.info(f"Learning Rate: {current_lr:.2e}")
         
         # Log to wandb at epoch level
         if wandb_run is not None:
-            wandb_run.log({
+            wandb_log_dict = {
                 "epoch": epoch + 1,
                 "train/total_loss": train_metrics["loss"],
                 "train/reconstruction_loss": train_metrics["reconstruction_loss"],
@@ -403,7 +432,11 @@ def main():
                 "val/reconstruction_loss": val_metrics["reconstruction_loss"],
                 "val/vq_loss": val_metrics["vq_loss"],
                 "learning_rate": current_lr,
-            })
+            }
+            if train_metrics.get('classification_loss', 0) > 0:
+                wandb_log_dict["train/classification_loss"] = train_metrics["classification_loss"]
+                wandb_log_dict["val/classification_loss"] = val_metrics["classification_loss"]
+            wandb_run.log(wandb_log_dict)
         
         epoch_metrics = {
             "epoch": epoch,

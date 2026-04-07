@@ -54,6 +54,7 @@ class VQVAEConfig:
     # Loss weights
     reconstruction_loss_weight: float = 1.0
     commitment_loss_weight: float = 0.25
+    classification_loss_weight: float = 0.5  # Weight for classification loss
     
     # Device
     device: str = "cuda"

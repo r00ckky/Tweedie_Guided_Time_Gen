@@ -64,13 +64,13 @@ class VQ_VAE(nn.Module):
             activation=config.decoder_activation,
         )
     
-    def encode(self, x: torch.Tensor, y:Optional[torch.Tensor], mask: Optional[torch.Tensor] = None) -> Dict:
+    def encode(self, x: torch.Tensor, y: Optional[torch.Tensor], mask: Optional[torch.Tensor] = None) -> Dict:
         """
         Encode input to latent codes.
         
         Args:
             x: Input tensor of shape (batch_size, seq_len, input_dim)
-            y: Optional target tensor of shape (batch_size, seq_len, output_dim)
+            y: Optional target tensor of shape (batch_size,) for classification
             mask: Optional attention mask
         
         Returns:
@@ -80,13 +80,12 @@ class VQ_VAE(nn.Module):
                 - indices: Codebook indices
                 - loss: VQ loss
                 - perplexity: Codebook perplexity
+                - classification_logits: Classification logits, or None
+                - classification_loss: Classification loss, or None
         """
-        # Encode to latent space
-        if self.config.encoder_class_token:
-            cls_loss, z = self.encoder(x, y, mask=mask)
-        else:
-            z = self.encoder(x, mask=mask)
-            cls_loss = None
+        # Encode to latent space - always returns (z, cls_logits, cls_loss)
+        z, cls_logits, cls_loss = self.encoder(x, y, mask=mask)
+        
         # Quantize
         quantization_output = self.vector_quantizer(z)
         z_q = quantization_output["quantized"]
@@ -98,6 +97,7 @@ class VQ_VAE(nn.Module):
             "loss": quantization_output["loss"],
             "perplexity": quantization_output["perplexity"],
             "encodings": quantization_output["encodings"],
+            "classification_logits": cls_logits,
             "classification_loss": cls_loss,
         }
     
@@ -129,7 +129,7 @@ class VQ_VAE(nn.Module):
         
         Args:
             x: Input tensor of shape (batch_size, seq_len, input_dim)
-            y: Optional target tensor of shape (batch_size, seq_len, output_dim)
+            y: Optional target tensor of shape (batch_size,) for classification
             mask: Optional attention mask
         
         Returns:
@@ -138,11 +138,12 @@ class VQ_VAE(nn.Module):
                 - z: Latent embeddings before quantization
                 - z_q: Quantized latent embeddings
                 - indices: Codebook indices
-                - total_loss: Total training loss (reconstruction + VQ)
+                - total_loss: Total training loss (reconstruction + VQ + classification)
                 - reconstruction_loss: MSE reconstruction loss
                 - vq_loss: Vector quantization loss
                 - perplexity: Codebook perplexity
-                - classification_loss: Optional classification loss if encoder class token is used
+                - classification_logits: Classification logits, or None
+                - classification_loss: Classification loss, or None
         """
         # Encode and quantize
         encode_output = self.encode(x, y, mask=mask)
@@ -154,13 +155,21 @@ class VQ_VAE(nn.Module):
         # Compute losses
         reconstruction_loss = nn.functional.mse_loss(reconstruction, x)
         vq_loss = encode_output["loss"]
+        
+        # Compute total loss including classification if available
         total_loss = (
             self.config.reconstruction_loss_weight * reconstruction_loss
             + self.config.commitment_loss_weight * vq_loss
         )
         
+        # Add classification loss if it exists
+        classification_loss = encode_output["classification_loss"]
+        if classification_loss is not None:
+            # Default weight for classification loss (1.0)
+            classification_weight = getattr(self.config, 'classification_loss_weight', 1.0)
+            total_loss = total_loss + classification_weight * classification_loss
+        
         return {
-            "classification": encode_output["classification_loss"],
             "reconstruction": reconstruction,
             "z": encode_output["z"],
             "z_q": z_q,
@@ -170,6 +179,8 @@ class VQ_VAE(nn.Module):
             "vq_loss": vq_loss,
             "perplexity": encode_output["perplexity"],
             "encodings": encode_output["encodings"],
+            "classification_logits": encode_output["classification_logits"],
+            "classification_loss": classification_loss,
         }
     
     def reconstruct_from_indices(self, indices: torch.Tensor) -> torch.Tensor:

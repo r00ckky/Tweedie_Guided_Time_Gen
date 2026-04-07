@@ -173,6 +173,12 @@ def get_args():
         default=0.25,
         help="Weight for commitment loss",
     )
+    loss_group.add_argument(
+        "--classification-loss-weight",
+        type=float,
+        default=0.5,
+        help="Weight for classification loss (if classification head is used)",
+    )
     
     # Logging and checkpointing arguments
     logging_group = parser.add_argument_group("Logging and Checkpointing")
