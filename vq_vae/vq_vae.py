@@ -39,6 +39,8 @@ class VQ_VAE(nn.Module):
             ff_dim=config.encoder_ff_dim,
             dropout=config.encoder_dropout,
             activation=config.encoder_activation,
+            class_token=config.encoder_class_token,
+            class_proj_dim=config.encoder_class_proj_dim,
         )
         
         # Vector Quantizer
@@ -62,12 +64,13 @@ class VQ_VAE(nn.Module):
             activation=config.decoder_activation,
         )
     
-    def encode(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> Dict:
+    def encode(self, x: torch.Tensor, y:Optional[torch.Tensor], mask: Optional[torch.Tensor] = None) -> Dict:
         """
         Encode input to latent codes.
         
         Args:
             x: Input tensor of shape (batch_size, seq_len, input_dim)
+            y: Optional target tensor of shape (batch_size, seq_len, output_dim)
             mask: Optional attention mask
         
         Returns:
@@ -79,8 +82,11 @@ class VQ_VAE(nn.Module):
                 - perplexity: Codebook perplexity
         """
         # Encode to latent space
-        z = self.encoder(x, mask=mask)
-        
+        if self.config.encoder_class_token:
+            cls_loss, z = self.encoder(x, y, mask=mask)
+        else:
+            z = self.encoder(x, mask=mask)
+            cls_loss = None
         # Quantize
         quantization_output = self.vector_quantizer(z)
         z_q = quantization_output["quantized"]
@@ -92,6 +98,7 @@ class VQ_VAE(nn.Module):
             "loss": quantization_output["loss"],
             "perplexity": quantization_output["perplexity"],
             "encodings": quantization_output["encodings"],
+            "classification_loss": cls_loss,
         }
     
     def decode(
@@ -114,6 +121,7 @@ class VQ_VAE(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
+        y: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
     ) -> Dict:
         """
@@ -121,6 +129,7 @@ class VQ_VAE(nn.Module):
         
         Args:
             x: Input tensor of shape (batch_size, seq_len, input_dim)
+            y: Optional target tensor of shape (batch_size, seq_len, output_dim)
             mask: Optional attention mask
         
         Returns:
@@ -133,9 +142,10 @@ class VQ_VAE(nn.Module):
                 - reconstruction_loss: MSE reconstruction loss
                 - vq_loss: Vector quantization loss
                 - perplexity: Codebook perplexity
+                - classification_loss: Optional classification loss if encoder class token is used
         """
         # Encode and quantize
-        encode_output = self.encode(x, mask=mask)
+        encode_output = self.encode(x, y, mask=mask)
         z_q = encode_output["z_q"]
         
         # Decode
@@ -150,6 +160,7 @@ class VQ_VAE(nn.Module):
         )
         
         return {
+            "classification": encode_output["classification_loss"],
             "reconstruction": reconstruction,
             "z": encode_output["z"],
             "z_q": z_q,

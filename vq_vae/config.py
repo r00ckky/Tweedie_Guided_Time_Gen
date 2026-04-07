@@ -21,6 +21,10 @@ class VQVAEConfig:
     commitment_cost: float = 0.25
     decay: float = 0.99
     epsilon: float = 1e-5
+
+    # Classification token parameters
+    encoder_class_token: bool = True
+    encoder_class_proj_dim: Optional[int] = 1  # Set to None to disable
     
     # Encoder parameters
     encoder_hidden_dim: int = 256

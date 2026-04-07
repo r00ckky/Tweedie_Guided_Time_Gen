@@ -4,6 +4,7 @@ Transformer-based Encoder for VQ-VAE.
 
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 from typing import Optional
 
 
@@ -85,6 +86,8 @@ class TransformerEncoder(nn.Module):
         input_dim: int,
         hidden_dim: int,
         embedding_dim: int,
+        class_token: bool = True,
+        class_proj_dim: Optional[int] = 1,
         num_layers: int = 2,
         num_heads: int = 8,
         ff_dim: int = 512,
@@ -103,7 +106,9 @@ class TransformerEncoder(nn.Module):
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim, eps=layer_norm_eps),
         )
-        
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim)) if class_token else None
+        if self.cls_token is not None:
+            nn.init.trunc_normal_(self.cls_token, std=0.02)
         # Stack of transformer blocks
         self.transformer_blocks = nn.ModuleList([
             TransformerEncoderBlock(
@@ -119,8 +124,14 @@ class TransformerEncoder(nn.Module):
         
         # Project to embedding dimension
         self.output_projection = nn.Linear(hidden_dim, embedding_dim)
+        self.class_proj = nn.Linear(hidden_dim, class_proj_dim) if class_token and class_proj_dim is not None else None
     
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None):
+    def forward(
+            self, 
+            x: torch.Tensor,
+            y: Optional[torch.Tensor] = None, 
+            mask: Optional[torch.Tensor] = None
+        ):
         """
         Encode input to latent representation.
         
@@ -133,12 +144,30 @@ class TransformerEncoder(nn.Module):
         """
         # Project input to hidden dimension
         x = self.input_projection(x)
+        if self.cls_token is not None:
+            x = torch.cat([self.cls_token.expand(x.size(0), -1, -1), x], dim=1)  # Add CLS token
         
-        # Apply transformer blocks
         for block in self.transformer_blocks:
             x = block(x, mask=mask)
         
         # Project to embedding dimension
         x = self.output_projection(x)
-        
-        return x
+        if self.class_proj is not None:
+            x_cls = x[:, 0]  # Extract CLS token representation
+            x_toks = x[:, 1:]  # Extract token representations
+            x_cls = self.class_proj(x_cls)
+            if x_cls.shape[-1] == 1:
+                x_cls = x_cls.squeeze(-1)  # Remove last dimension if it's 1
+                x_cls = F.sigmoid(x_cls)  # Apply sigmoid for binary classification
+                if y is not None:
+                    loss_fn = nn.BCELoss()
+                    loss = loss_fn(x_cls, y.float())
+                    return x_cls, x_toks, loss
+            else:
+                x_cls = F.softmax(x_cls, dim=-1)  # Apply softmax for multi-class classification
+                if y is not None:
+                    loss_fn = nn.CrossEntropyLoss()
+                    loss = loss_fn(x_cls, y)
+                    return x_cls, x_toks, loss
+            return x_cls, x_toks
+        return x_toks
