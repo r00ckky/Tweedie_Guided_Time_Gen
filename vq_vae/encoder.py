@@ -3,7 +3,7 @@ Transformer-based Encoder for VQ-VAE.
 """
 
 import torch
-import torch.nn as nn
+from torch import nn, Tensor
 from torch.nn import functional as F
 from typing import Optional
 
@@ -130,10 +130,11 @@ class TransformerEncoder(nn.Module):
     
     def forward(
             self, 
-            x: torch.Tensor,
-            y: Optional[torch.Tensor] = None, 
-            mask: Optional[torch.Tensor] = None,
-            time_tensor: Optional[torch.Tensor] = None
+            x: Tensor,
+            y: Tensor,
+            time_tensor:Tensor, 
+            mask: Optional[Tensor] = None,
+            
         ):
         """
         Encode input to latent representation.
@@ -150,10 +151,10 @@ class TransformerEncoder(nn.Module):
             cls_loss: Classification loss (None if y not provided or no classification head)
         """
         x = self.input_projection(x)
-        time = self.time_proj(time_tensor)
+        time = torch.sin(2 * self.time_proj(time_tensor))
         batch_size = x.size(0)
-        x+=time[:, :2:]
-        
+        x += time[:, ::2]
+
         if self.cls_token is not None:
             cls_token_expanded = self.cls_token.expand(batch_size, -1, -1)
             x = torch.cat([cls_token_expanded, x], dim=1)  # Add CLS token

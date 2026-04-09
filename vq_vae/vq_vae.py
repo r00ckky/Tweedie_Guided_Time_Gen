@@ -132,7 +132,7 @@ class VQ_VAE(nn.Module):
         # Reconstruction projection from patch embeddings back to input
         self.output_projection = nn.Linear(config.patch_embed_dim, config.input_dim)
     
-    def encode(self, x: torch.Tensor, y: Optional[torch.Tensor], mask: Optional[torch.Tensor] = None) -> Dict:
+    def encode(self, x: torch.Tensor, y: Optional[torch.Tensor], mask: Optional[torch.Tensor] = None, time_tensor: Optional[torch.Tensor] = None) -> Dict:
         """
         Encode input to latent codes.
         
@@ -140,7 +140,8 @@ class VQ_VAE(nn.Module):
             x: Input tensor of shape (batch_size, seq_len, input_dim)
             y: Optional target tensor of shape (batch_size,) for classification
             mask: Optional attention mask
-        
+            time_tensor: Optional tensor of shape (batch_size, seq_len) containing time differences
+
         Returns:
             Dictionary containing:
                 - z: Latent embeddings before quantization
@@ -155,7 +156,7 @@ class VQ_VAE(nn.Module):
         x_patch = self.patch_embedding(x)
         
         # Encode to latent space - always returns (z, cls_logits, cls_loss)
-        z, cls_logits, cls_loss = self.encoder(x_patch, y, mask=mask)
+        z, cls_logits, cls_loss = self.encoder(x_patch, y, mask=mask, time_tensor=time_tensor)
         
         # Quantize
         quantization_output = self.vector_quantizer(z)
@@ -170,6 +171,7 @@ class VQ_VAE(nn.Module):
             "encodings": quantization_output["encodings"],
             "classification_logits": cls_logits,
             "classification_loss": cls_loss,
+            "x_patch": x_patch,
         }
     
     def decode(
@@ -178,29 +180,27 @@ class VQ_VAE(nn.Module):
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
-        Decode quantized latent codes to reconstruction.
+        Decode quantized latent codes to reconstruction at patch level.
         
         Args:
             z_q: Quantized latent tensor of shape (batch_size, seq_len, embedding_dim)
             mask: Optional attention mask
         
         Returns:
-            Reconstructed tensor of shape (batch_size, seq_len, input_dim)
+            Patch-level reconstructed tensor of shape (batch_size, num_patches, patch_embed_dim)
         """
-        # Decode: (batch, seq_len, embedding_dim) -> (batch, seq_len, patch_embed_dim)
+        # Decode: (batch, num_patches, embedding_dim) -> (batch, num_patches, patch_embed_dim)
         patch_recon = self.decoder(z_q, self_attn_mask=mask)
         
-        # Project back to original input dimension
-        # (batch, seq_len, patch_embed_dim) -> (batch, seq_len, input_dim)
-        recon = self.output_projection(patch_recon)
-        
-        return recon
+        # Return patch-level reconstruction for loss computation
+        return patch_recon
     
     def forward(
         self,
         x: torch.Tensor,
         y: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
+        time_tensor: Optional[torch.Tensor] = None,
     ) -> Dict:
         """
         Forward pass through VQ-VAE.
@@ -209,6 +209,7 @@ class VQ_VAE(nn.Module):
             x: Input tensor of shape (batch_size, seq_len, input_dim)
             y: Optional target tensor of shape (batch_size,) for classification
             mask: Optional attention mask
+            time_tensor: Optional tensor of shape (batch_size, seq_len) containing time differences
         
         Returns:
             Dictionary containing:
@@ -224,14 +225,16 @@ class VQ_VAE(nn.Module):
                 - classification_loss: Classification loss, or None
         """
         # Encode and quantize
-        encode_output = self.encode(x, y, mask=mask)
+        encode_output = self.encode(x, y, mask=mask, time_tensor=time_tensor)
         z_q = encode_output["z_q"]
+        x_patch = encode_output["x_patch"]
         
         # Decode
         reconstruction = self.decode(z_q, mask=mask)
         
-        # Compute losses
-        reconstruction_loss = nn.functional.mse_loss(reconstruction, x)
+        # Compute reconstruction loss at patch level
+        # Both reconstruction and x_patch are shape (batch, num_patches, patch_embed_dim)
+        reconstruction_loss = nn.functional.mse_loss(reconstruction, x_patch)
         vq_loss = encode_output["loss"]
         
         # Compute total loss including classification if available

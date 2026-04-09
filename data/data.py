@@ -70,35 +70,58 @@ class AmexDataset(Dataset):
         return len(self.customer_df)
 
     def __getitem__(self, idx):
-        if self.conn is None:
-            self.conn = sqlite3.connect(self.db_path)
-            
-        customer = self.customer_df.iloc[idx]['customer_ID']
-        target = self.customer_df.iloc[idx]['target']
+        # Create a new connection for each worker process
+        conn = sqlite3.connect(self.db_path)
+        
+        cust_target = self.customer_df.iloc[idx]
+        customer = cust_target['customer_ID']
+        target = cust_target['target']
         
         query = f"SELECT {self.select_string} FROM statements WHERE customer_ID = '{customer}'"
-        df = pd.read_sql(query, self.conn)
         
-        dates = pd.to_datetime(df['S_2'])
-        
-        time_diffs = dates.diff().dt.days.fillna(0).values 
-        
-        df = df.drop(columns=['customer_ID', 'S_2'], errors='ignore')
-        df = df.fillna(self.fill_dict).infer_objects(copy=False)
-        
-        transformed_data = self.transformer.transform(df)
+        try:
+            df = pd.read_sql(query, conn)
+        except Exception as e:
+            print(f"Error reading customer {customer}: {e}")
+            conn.close()
+            # Return zeros on error
+            num_features = len(self.good_cols) - 2
+            transformed_data = np.zeros((self.max_seq_len, num_features))
+            cumulative_days = np.zeros(self.max_seq_len)  # FIXED: Defined here for the tensor at the bottom
+        else:
+            conn.close()
             
-        seq_len, num_features = transformed_data.shape
+            # Handle empty result
+            if df.empty:
+                num_features = len(self.good_cols) - 2  # minus customer_ID and S_2
+                transformed_data = np.zeros((1, num_features))
+                cumulative_days = np.array([0.0])  # FIXED: Defined here
+            else:
+                dates = pd.to_datetime(df['S_2'])
+                # Get relative distance from the zeroth time step
+                cumulative_days = (dates - dates.iloc[0]).dt.days.values
+                
+                df = df.drop(columns=['customer_ID', 'S_2'], errors='ignore')
+                df = df.fillna(self.fill_dict).infer_objects(copy=False)
+                
+                transformed_data = self.transformer.transform(df)
+            
+            seq_len, num_features = transformed_data.shape
+            
+            # Pad features and time sequences if necessary
+            if seq_len < self.max_seq_len:
+                feature_padding = np.zeros((self.max_seq_len - seq_len, num_features))
+                transformed_data = np.vstack([transformed_data, feature_padding])
+                
+                time_padding = np.zeros(self.max_seq_len - seq_len)
+                cumulative_days = np.concatenate([cumulative_days, time_padding])
         
-        if seq_len < self.max_seq_len:
-            feature_padding = np.zeros((self.max_seq_len - seq_len, num_features))
-            transformed_data = np.vstack([transformed_data, feature_padding])
-            
-            time_padding = np.zeros(self.max_seq_len - seq_len)
-            time_diffs = np.concatenate([time_diffs, time_padding])
-            
-        X_tensor = torch.tensor(transformed_data, dtype=torch.float32)
-        time_tensor = torch.tensor(time_diffs, dtype=torch.float32).unsqueeze(1) 
-        y_tensor = torch.tensor(target, dtype=torch.float32)
+        # Slice up to max_seq_len to handle cases where the sequence is longer than the max
+        X_tensor = torch.tensor(transformed_data[:self.max_seq_len], dtype=torch.float32)
+        
+        # Scaling cumulative days by 365 (optional, but recommended for Transformer stability)
+        time_tensor = torch.tensor(cumulative_days[:self.max_seq_len] / 365.0, dtype=torch.float32).unsqueeze(1) 
+        
+        y_tensor = torch.tensor(float(target), dtype=torch.float32)
         
         return X_tensor, time_tensor, y_tensor

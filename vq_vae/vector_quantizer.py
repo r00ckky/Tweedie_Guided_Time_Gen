@@ -86,7 +86,7 @@ class VectorQuantizer(nn.Module):
         """
         # Flatten input except last dimension
         input_shape = inputs.shape
-        flat_inputs = inputs.view(-1, self.embedding_dim)
+        flat_inputs = inputs.reshape(-1, self.embedding_dim)
         
         # Calculate distances to all embeddings
         distances = (
@@ -101,7 +101,7 @@ class VectorQuantizer(nn.Module):
         
         # Quantize and unflatten
         quantized = F.embedding(encoding_indices, self.embeddings.weight)
-        quantized = quantized.view(input_shape)
+        quantized = quantized.reshape(input_shape)
         
         # Track usage
         tracker_info = {}
@@ -143,7 +143,7 @@ class VectorQuantizer(nn.Module):
         perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + self.epsilon)))
         
         # Reshape encoding indices back to original shape (except last dim)
-        encoding_indices = encoding_indices.view(input_shape[:-1])
+        encoding_indices = encoding_indices.reshape(input_shape[:-1])
         
         return {
             "quantized": quantized,
@@ -185,7 +185,7 @@ class VectorQuantizer(nn.Module):
     def encode(self, inputs: torch.Tensor) -> torch.Tensor:
         """Get encoding indices for inputs."""
         input_shape = inputs.shape
-        flat_inputs = inputs.view(-1, self.embedding_dim)
+        flat_inputs = inputs.reshape(-1, self.embedding_dim)
         
         distances = (
             torch.sum(flat_inputs ** 2, dim=1, keepdim=True)
@@ -193,7 +193,7 @@ class VectorQuantizer(nn.Module):
             + torch.sum(self.embeddings.weight ** 2, dim=1, keepdim=True).t()
         )
         encoding_indices = torch.argmin(distances, dim=1)
-        return encoding_indices.view(input_shape[:-1])
+        return encoding_indices.reshape(input_shape[:-1])
     
     def decode(self, indices: torch.Tensor) -> torch.Tensor:
         """Decode indices back to embedding vectors."""

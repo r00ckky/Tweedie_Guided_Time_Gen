@@ -87,12 +87,41 @@ def set_seed(seed):
 def create_dataloaders(args, logger):
     """Create training and validation dataloaders."""
     logger.info("Loading data...")
+    logger.info(f"Label path: {args.train_labels}")
     
-    # Load customer data
-    train_data = pd.read_csv(args.train_data)
+    # Load customer data with safety measures
+    try:
+        # First, try to read just the structure to check validity
+        logger.info("Reading CSV file structure...")
+        train_data = pd.read_csv(
+            args.train_labels,
+            dtype={'customer_ID': str, 'target': 'int8'},  # Specify dtypes for key columns
+            low_memory=False,  # Force reading entire file to ensure consistency
+            nrows=None,
+        )
+        logger.info(f"Successfully loaded data with shape: {train_data.shape}")
+        logger.info(f"Columns: {list(train_data.columns)}")
+    except Exception as e:
+        logger.error(f"Error reading CSV: {e}")
+        raise
+    
     train_data = train_data.sample(frac=1.0, random_state=args.seed).reset_index(drop=True)  # Shuffle data
     
-    # Split into train and validation (80-20)
+    # Validate data integrity
+    logger.info("Validating data integrity...")
+    if 'customer_ID' not in train_data.columns:
+        raise ValueError("Missing 'customer_ID' column in train data")
+    if 'target' not in train_data.columns:
+        raise ValueError("Missing 'target' column in train data")
+    
+    # Check for null values in critical columns
+    null_count = train_data[['customer_ID', 'target']].isnull().sum().sum()
+    if null_count > 0:
+        logger.warning(f"Found {null_count} null values in critical columns. Dropping them...")
+        train_data = train_data.dropna(subset=['customer_ID', 'target']).reset_index(drop=True)
+    
+    logger.info(f"Data validation complete. Final shape: {train_data.shape}")
+    
     n_customers = len(train_data)
     val_size = int(0.2 * n_customers)
     
@@ -127,11 +156,12 @@ def create_dataloaders(args, logger):
     )
     
     # Create dataloaders
+    # Note: SQLite is not thread-safe, so we must use num_workers=0
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=args.num_workers,
+        num_workers=0,  # SQLite connections must be in main process
         pin_memory=True,
     )
     
@@ -139,7 +169,7 @@ def create_dataloaders(args, logger):
         val_dataset,
         batch_size=args.val_batch_size,
         shuffle=False,
-        num_workers=args.num_workers,
+        num_workers=0,  # SQLite connections must be in main process
         pin_memory=True,
     )
     
@@ -152,7 +182,6 @@ def create_model_and_optimizer(args, logger):
     """Create VQ-VAE model and optimizer."""
     logger.info("Creating VQ-VAE model...")
     
-    # Create config from args using streamlined configuration
     config = create_config_from_args(args)
     
     logger.info(f"Model config:\n{config}")
@@ -160,7 +189,6 @@ def create_model_and_optimizer(args, logger):
     model = VQ_VAE(config)
     model = model.to(args.device)
     
-    # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Total parameters: {total_params:,}, Trainable: {trainable_params:,}")
@@ -196,14 +224,14 @@ def train_epoch(model, train_loader, optimizer, device, logger, log_freq, wandb_
     
     for batch_idx, batch in enumerate(pbar):
         # Get batch data
-        x, y , time_tensor= batch 
+        x, time_tensor, y = batch 
         x = x.to(device)  # Shape: (batch_size, seq_len, input_dim)
         y = y.to(device)  # Shape: (batch_size,)
         time_tensor = time_tensor.to(device)  # Shape: (batch_size, seq_len, 1)
         
         # Forward pass
         optimizer.zero_grad()
-        output = model(x, y, time_tensor)
+        output = model(x, y, time_tensor=time_tensor)
         
         loss = output["total_loss"]
         
@@ -246,6 +274,7 @@ def train_epoch(model, train_loader, optimizer, device, logger, log_freq, wandb_
                 "loss": f"{avg_loss:.4f}",
                 "recon": f"{avg_recon:.4f}",
                 "vq": f"{avg_vq:.4f}",
+                "class":f"{avg_cls:.4f}"
             }
             if avg_cls > 0:
                 postfix_dict["cls"] = f"{avg_cls:.4f}"
@@ -272,11 +301,12 @@ def validate(model, val_loader, device, logger, wandb_run=None, epoch=None):
         pbar = tqdm(val_loader, desc="Validating", leave=True)
         
         for batch_idx, batch in enumerate(pbar):
-            x, y = batch  # Both shape: (batch_size, seq_len, input_dim/1)
+            x, time_tensor, y = batch  # x: (batch_size, seq_len, input_dim), y: (batch_size,), time_tensor: (batch_size, seq_len, 1)
             x = x.to(device)
             y = y.to(device)
+            time_tensor = time_tensor.to(device)
             
-            output = model(x, y)
+            output = model(x, y, time_tensor=time_tensor)
             
             batch_total_loss = output["total_loss"].item()
             batch_recon_loss = output["reconstruction_loss"].item()
