@@ -107,6 +107,7 @@ class TransformerEncoder(nn.Module):
             nn.LayerNorm(hidden_dim, eps=layer_norm_eps),
         )
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim)) if class_token else None
+        self.time_proj = nn.Linear(1, hidden_dim)
         if self.cls_token is not None:
             nn.init.trunc_normal_(self.cls_token, std=0.02)
         # Stack of transformer blocks
@@ -131,7 +132,8 @@ class TransformerEncoder(nn.Module):
             self, 
             x: torch.Tensor,
             y: Optional[torch.Tensor] = None, 
-            mask: Optional[torch.Tensor] = None
+            mask: Optional[torch.Tensor] = None,
+            time_tensor: Optional[torch.Tensor] = None
         ):
         """
         Encode input to latent representation.
@@ -140,15 +142,17 @@ class TransformerEncoder(nn.Module):
             x: Input tensor of shape (batch_size, seq_len, input_dim)
             y: Optional target tensor for classification (batch_size,)
             mask: Optional attention mask
+            time_tensor: Optional tensor of shape (batch_size, seq_len, 1) for time differences
         
         Returns:
             z: Encoded tensor of shape (batch_size, seq_len, embedding_dim)
             cls_logits: Classification logits of shape (batch_size, class_proj_dim), or None
             cls_loss: Classification loss (None if y not provided or no classification head)
         """
-        # Project input to hidden dimension
         x = self.input_projection(x)
+        time = self.time_proj(time_tensor)
         batch_size = x.size(0)
+        x+=time[:, :2:]
         
         if self.cls_token is not None:
             cls_token_expanded = self.cls_token.expand(batch_size, -1, -1)

@@ -8,26 +8,36 @@ set -euo pipefail
 # ============================================================================
 
 # Dataset Paths and Configuration
-DATA_DIR="/scratch/s25090/Amex_data"
+DATA_DIR="/home/chaitanya-kohli/Amex/TimeVQDM/data/Amex_data"
 TRAIN_DATA="${DATA_DIR}/train_data.csv"
 TRAIN_LABELS="${DATA_DIR}/train_labels.csv"
-DB_PATH="${DATA_DIR}/amex.db"
-MAX_SEQ_LEN=13
+DB_PATH="${DATA_DIR}/amex_data.db"
+MAX_SEQ_LEN=14
 BATCH_SIZE=32
 NUM_WORKERS=4
 NUM_EPOCHS=20
 
-# Model Architecture Configuration
-INPUT_DIM=512
-NUM_EMBEDDINGS=512
-EMBEDDING_DIM=64
+# Model Architecture Configuration - Streamlined
+# Patch Embedding
+INPUT_DIM=294
+PATCH_SIZE=2
+PATCH_STRIDE=2
+PATCH_EMBED_DIM=256
+
+# Vector Quantization
+NUM_EMBEDDINGS=256
+EMBEDDING_DIM=256
 COMMITMENT_COST=0.25
-ENCODER_LAYERS=2
-ENCODER_HEADS=8
-DECODER_LAYERS=2
-DECODER_HEADS=8
+
+# Transformer (Unified for Encoder and Decoder)
+HIDDEN_DIM=256
+NUM_LAYERS=6
+NUM_HEADS=8
+FF_MULTIPLIER=2
 DROPOUT=0.1
-ENCODER_CLASS_TOKEN=false
+
+# Classification
+USE_CLASS_TOKEN=true
 CLASS_PROJ_DIM=1
 
 # Training Hyperparameters
@@ -44,11 +54,8 @@ RECONSTRUCTION_LOSS_WEIGHT=1.0
 COMMITMENT_LOSS_WEIGHT=0.25
 CLASSIFICATION_LOSS_WEIGHT=0.5
 
-# Classification Configuration
-CLASSIFICATION_ENABLED=true
-
 # Output and Logging
-CHECKPOINT_DIR="/scratch/s25090/vq_vae/checkpoints_$(date +%Y%m%d_%H%M%S)"
+CHECKPOINT_DIR="/home/chaitanya-kohli/Amex/TimeVQDM/checkpoints/checkpoints_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "${CHECKPOINT_DIR}"
 
 # Weights & Biases Configuration
@@ -85,16 +92,19 @@ CUDA_VISIBLE_DEVICES=0 python train_vq_vae.py \
     --db-path "${DB_PATH}" \
     --max-seq-len ${MAX_SEQ_LEN} \
     --input-dim ${INPUT_DIM} \
+    --patch-size ${PATCH_SIZE} \
+    --patch-stride ${PATCH_STRIDE} \
+    --patch-embed-dim ${PATCH_EMBED_DIM} \
     --num-embeddings ${NUM_EMBEDDINGS} \
     --embedding-dim ${EMBEDDING_DIM} \
     --commitment-cost ${COMMITMENT_COST} \
-    --encoder-num-layers ${ENCODER_LAYERS} \
-    --encoder-num-heads ${ENCODER_HEADS} \
-    --decoder-num-layers ${DECODER_LAYERS} \
-    --decoder-num-heads ${DECODER_HEADS} \
+    --hidden-dim ${HIDDEN_DIM} \
+    --num-layers ${NUM_LAYERS} \
+    --num-heads ${NUM_HEADS} \
+    --ff-multiplier ${FF_MULTIPLIER} \
     --dropout ${DROPOUT} \
-    $([ "${ENCODER_CLASS_TOKEN}" = true ] && echo "--encoder_class_token") \
-    --encoder-class-proj-dim ${CLASS_PROJ_DIM} \
+    $([ "${USE_CLASS_TOKEN}" = true ] && echo "--use-class-token") \
+    --class-proj-dim ${CLASS_PROJ_DIM} \
     --batch-size ${BATCH_SIZE} \
     --val-batch-size ${VAL_BATCH_SIZE} \
     --num-epochs ${NUM_EPOCHS} \
@@ -120,5 +130,4 @@ CUDA_VISIBLE_DEVICES=0 python train_vq_vae.py \
     --wandb-run-name "${WANDB_RUN_NAME}" \
     --wandb-save-dir "${WANDB_SAVE_DIR}" \
     --use-wandb
-
 echo "Training completed! Checkpoints saved to ${CHECKPOINT_DIR}"

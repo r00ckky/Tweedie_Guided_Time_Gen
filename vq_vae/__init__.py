@@ -12,7 +12,7 @@ Main Components:
 - VectorQuantizer: Vector quantization module with EMA updates
 """
 
-from .config import VQVAEConfig, TransformerConfig
+from .config import VQVAEConfig
 from .vq_vae import VQ_VAE
 from .encoder import TransformerEncoder, TransformerEncoderBlock
 from .decoder import TransformerDecoder, TransformerDecoderBlock

@@ -6,7 +6,7 @@ import sqlite3
 from sklearn.preprocessing import QuantileTransformer
 import warnings
 
-warnings.filterwarnings("ignore", category=FutureWarning)  # Suppress FutureWarnings from pandas concat
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 class AmexDataset(Dataset):
     def __init__(self, customer_df, db_path, fill_dict=None, transformer=None, max_seq_len=13):
@@ -15,7 +15,6 @@ class AmexDataset(Dataset):
         self.fill_dict = fill_dict if fill_dict is not None else {}
         self.max_seq_len = max_seq_len
         
-        # Use QuantileTransformer mapped to a normal distribution
         self.transformer = transformer if transformer is not None else QuantileTransformer(output_distribution='normal', random_state=42)
         
         self.cols_to_drop = [
@@ -35,7 +34,6 @@ class AmexDataset(Dataset):
         
         self.conn = None 
         
-        # Automatically fit if we are starting fresh (empty fill_dict)
         if not self.fill_dict:
             self.fit_transform()
 
@@ -51,7 +49,6 @@ class AmexDataset(Dataset):
             all_data.append(df)
         conn.close()
         
-        # Suppress the pandas empty concat warning
         with warnings.catch_warnings():
             warnings.simplefilter(action='ignore', category=FutureWarning)
             sample_df = pd.concat(all_data, ignore_index=True)
@@ -64,7 +61,6 @@ class AmexDataset(Dataset):
         sample_filled = sample_features.fillna(self.fill_dict)
         
         print("Fitting Quantile Transformer (This will be instant)...")
-        # Sklearn expects the data to just be passed into fit()
         self.transformer.fit(sample_filled)
         print("Fit complete!")
         
@@ -83,18 +79,26 @@ class AmexDataset(Dataset):
         query = f"SELECT {self.select_string} FROM statements WHERE customer_ID = '{customer}'"
         df = pd.read_sql(query, self.conn)
         
+        dates = pd.to_datetime(df['S_2'])
+        
+        time_diffs = dates.diff().dt.days.fillna(0).values 
+        
         df = df.drop(columns=['customer_ID', 'S_2'], errors='ignore')
         df = df.fillna(self.fill_dict).infer_objects(copy=False)
         
-        # Sklearn returns numpy arrays directly
         transformed_data = self.transformer.transform(df)
             
         seq_len, num_features = transformed_data.shape
+        
         if seq_len < self.max_seq_len:
-            padding = np.zeros((self.max_seq_len - seq_len, num_features))
-            transformed_data = np.vstack([transformed_data, padding])
+            feature_padding = np.zeros((self.max_seq_len - seq_len, num_features))
+            transformed_data = np.vstack([transformed_data, feature_padding])
+            
+            time_padding = np.zeros(self.max_seq_len - seq_len)
+            time_diffs = np.concatenate([time_diffs, time_padding])
             
         X_tensor = torch.tensor(transformed_data, dtype=torch.float32)
+        time_tensor = torch.tensor(time_diffs, dtype=torch.float32).unsqueeze(1) 
         y_tensor = torch.tensor(target, dtype=torch.float32)
         
-        return X_tensor, y_tensor
+        return X_tensor, time_tensor, y_tensor

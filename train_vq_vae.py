@@ -21,7 +21,8 @@ except ImportError:
 from data.data import AmexDataset
 from vq_vae.vq_vae import VQ_VAE
 from vq_vae.config import VQVAEConfig
-from args import get_args
+from args import get_args, create_config_from_args
+import gc
 
 
 def setup_logging(output_dir):
@@ -52,15 +53,22 @@ def setup_wandb(args, logger):
         return None
     
     try:
-        run = wandb.init(
-            project=args.wandb_project,
-            entity=args.wandb_entity,
-            name=None,  # Auto-generate name
-            notes=args.wandb_notes,
-            tags=args.wandb_tags if args.wandb_tags else None,
-            config=vars(args),
-            reinit=False,
-        )
+        # Prepare wandb init kwargs
+        wandb_kwargs = {
+            "project": args.wandb_project,
+            "entity": args.wandb_entity,
+            "name": args.wandb_run_name,  # Use provided run name or auto-generate
+            "notes": args.wandb_notes,
+            "tags": args.wandb_tags if args.wandb_tags else None,
+            "config": vars(args),
+            "reinit": False,
+        }
+        
+        # Add save directory if provided
+        if args.wandb_save_dir:
+            wandb_kwargs["dir"] = str(args.wandb_save_dir)
+        
+        run = wandb.init(**wandb_kwargs)
         logger.info(f"Initialized Weights & Biases run: {run.name}")
         return run
     except Exception as e:
@@ -82,7 +90,7 @@ def create_dataloaders(args, logger):
     
     # Load customer data
     train_data = pd.read_csv(args.train_data)
-    train_labels = pd.read_csv(args.train_labels)
+    train_data = train_data.sample(frac=1.0, random_state=args.seed).reset_index(drop=True)  # Shuffle data
     
     # Split into train and validation (80-20)
     n_customers = len(train_data)
@@ -144,29 +152,8 @@ def create_model_and_optimizer(args, logger):
     """Create VQ-VAE model and optimizer."""
     logger.info("Creating VQ-VAE model...")
     
-    config = VQVAEConfig(
-        input_dim=args.input_dim,
-        output_dim=args.input_dim,
-        num_embeddings=args.num_embeddings,
-        embedding_dim=args.embedding_dim,
-        commitment_cost=args.commitment_cost,
-        encoder_class_token=args.encoder_class_token,
-        encoder_class_proj_dim=args.encoder_class_proj_dim,
-        encoder_num_layers=args.encoder_num_layers,
-        encoder_num_heads=args.encoder_num_heads,
-        encoder_dropout=args.dropout,
-        decoder_num_layers=args.decoder_num_layers,
-        decoder_num_heads=args.decoder_num_heads,
-        decoder_dropout=args.dropout,
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-        reconstruction_loss_weight=args.reconstruction_loss_weight,
-        commitment_loss_weight=args.commitment_loss_weight,
-        classification_loss_weight=args.classification_loss_weight,
-        device=args.device,
-        seed=args.seed,
-        max_seq_length=args.max_seq_len,
-    )
+    # Create config from args using streamlined configuration
+    config = create_config_from_args(args)
     
     logger.info(f"Model config:\n{config}")
     
@@ -209,13 +196,14 @@ def train_epoch(model, train_loader, optimizer, device, logger, log_freq, wandb_
     
     for batch_idx, batch in enumerate(pbar):
         # Get batch data
-        x, y = batch  # Both shape: (batch_size, seq_len, input_dim/1)
+        x, y , time_tensor= batch 
         x = x.to(device)  # Shape: (batch_size, seq_len, input_dim)
         y = y.to(device)  # Shape: (batch_size,)
+        time_tensor = time_tensor.to(device)  # Shape: (batch_size, seq_len, 1)
         
         # Forward pass
         optimizer.zero_grad()
-        output = model(x, y)
+        output = model(x, y, time_tensor)
         
         loss = output["total_loss"]
         
@@ -223,7 +211,6 @@ def train_epoch(model, train_loader, optimizer, device, logger, log_freq, wandb_
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
-        
         # Accumulate losses
         batch_total_loss = output["total_loss"].detach().item()
         batch_recon_loss = output["reconstruction_loss"].detach().item()
@@ -364,12 +351,13 @@ def main():
     set_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     args.device = device
-    
+    print(f"Using device: {device}")
     logger.info(f"Starting training with args:\n{vars(args)}")
     
     # Create dataloaders
     train_loader, val_loader, train_dataset = create_dataloaders(args, logger)
-    
+    gc.collect()  # Clean up memory before creating model
+    gc.collect()  # Call twice to ensure cleanup of any circular references
     # Create model and optimizer
     model, optimizer, scheduler, config = create_model_and_optimizer(args, logger)
     

@@ -46,72 +46,99 @@ def get_args():
         help="Maximum sequence length for time-series samples",
     )
     
-    # Model arguments
-    model_group = parser.add_argument_group("Model")
+    # Model arguments - Patch Embedding
+    model_group = parser.add_argument_group("Model - Patch Embedding")
     model_group.add_argument(
         "--input-dim",
         type=int,
-        default=512,
-        help="Input feature dimension",
+        default=294,
+        help="Input feature dimension (raw time-series features)",
     )
     model_group.add_argument(
+        "--patch-size",
+        type=int,
+        default=2,
+        help="Patch kernel size for Conv1d embedding",
+    )
+    model_group.add_argument(
+        "--patch-stride",
+        type=int,
+        default=2,
+        help="Patch stride for Conv1d embedding",
+    )
+    model_group.add_argument(
+        "--patch-embed-dim",
+        type=int,
+        default=256,
+        help="Output dimension of patch embedding",
+    )
+    
+    # Model arguments - Vector Quantization
+    vq_group = parser.add_argument_group("Model - Vector Quantization")
+    vq_group.add_argument(
         "--num-embeddings",
         type=int,
-        default=512,
-        help="Number of codebook embeddings",
+        default=256,
+        help="Number of codebook embeddings (VQ size)",
     )
-    model_group.add_argument(
+    vq_group.add_argument(
         "--embedding-dim",
         type=int,
-        default=64,
-        help="Dimension of codebook embeddings",
+        default=256,
+        help="Dimension of VQ embeddings (should match hidden_dim)",
     )
-    model_group.add_argument(
+    vq_group.add_argument(
         "--commitment-cost",
         type=float,
         default=0.25,
         help="Commitment cost for VQ loss",
     )
-    model_group.add_argument(
-        "--encoder-num-layers",
+    
+    # Model arguments - Transformer (Unified)
+    trans_group = parser.add_argument_group("Model - Transformer (Unified for Encoder & Decoder)")
+    trans_group.add_argument(
+        "--hidden-dim",
         type=int,
-        default=2,
-        help="Number of transformer layers in encoder",
+        default=256,
+        help="Transformer hidden dimension (encoder and decoder)",
     )
-    model_group.add_argument(
-        "--encoder-num-heads",
+    trans_group.add_argument(
+        "--num-layers",
         type=int,
-        default=8,
-        help="Number of attention heads in encoder",
+        default=6,
+        help="Number of transformer layers (encoder and decoder)",
     )
-    model_group.add_argument(
-        "--decoder-num-layers",
-        type=int,
-        default=2,
-        help="Number of transformer layers in decoder",
-    )
-    model_group.add_argument(
-        "--decoder-num-heads",
+    trans_group.add_argument(
+        "--num-heads",
         type=int,
         default=8,
-        help="Number of attention heads in decoder",
+        help="Number of attention heads",
     )
-    model_group.add_argument(
+    trans_group.add_argument(
+        "--ff-multiplier",
+        type=int,
+        default=2,
+        help="Feed-forward dimension multiplier (ff_dim = hidden_dim * ff_multiplier)",
+    )
+    trans_group.add_argument(
         "--dropout",
         type=float,
         default=0.1,
         help="Dropout rate for all layers",
     )
-    model_group.add_argument(
-        "--encoder_class_token",
+    
+    # Model arguments - Classification
+    class_group = parser.add_argument_group("Model - Classification")
+    class_group.add_argument(
+        "--use-class-token",
         action="store_true",
         help="Whether to use a classification token in the encoder",
     )
-    model_group.add_argument(
-        "--encoder_class_proj_dim",
+    class_group.add_argument(
+        "--class-proj-dim",
         type=int,
         default=1,
-        help="Dimension of the classification projection layer in the encoder",
+        help="Dimension of the classification projection layer",
     )
 
     # Training arguments
@@ -253,6 +280,18 @@ def get_args():
         default=[],
         help="Tags for the Weights & Biases run",
     )
+    wandb_group.add_argument(
+        "--wandb-run-name",
+        type=str,
+        default=None,
+        help="Run name for Weights & Biases (auto-generated if not provided)",
+    )
+    wandb_group.add_argument(
+        "--wandb-save-dir",
+        type=Path,
+        default=None,
+        help="Directory to save Weights & Biases data",
+    )
     
     # Debugging arguments
     debug_group = parser.add_argument_group("Debugging")
@@ -275,6 +314,43 @@ def get_args():
     )
     
     return parser.parse_args()
+
+
+def create_config_from_args(args):
+    """Convert command-line arguments to VQVAEConfig object."""
+    from vq_vae.config import VQVAEConfig
+    
+    config = VQVAEConfig(
+        # Patch Embedding
+        input_dim=args.input_dim,
+        patch_size=args.patch_size,
+        patch_stride=args.patch_stride,
+        patch_embed_dim=args.patch_embed_dim,
+        # Vector Quantization
+        num_embeddings=args.num_embeddings,
+        embedding_dim=args.embedding_dim,
+        commitment_cost=args.commitment_cost,
+        # Transformer (Unified)
+        hidden_dim=args.hidden_dim,
+        num_layers=args.num_layers,
+        num_heads=args.num_heads,
+        ff_multiplier=args.ff_multiplier,
+        dropout=args.dropout,
+        # Classification
+        use_class_token=args.use_class_token,
+        class_proj_dim=args.class_proj_dim,
+        # Loss Weights
+        reconstruction_loss_weight=args.reconstruction_loss_weight,
+        commitment_loss_weight=args.commitment_loss_weight,
+        classification_loss_weight=args.classification_loss_weight,
+        # Training
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        # Device
+        device=args.device,
+        seed=args.seed,
+    )
+    return config
 
 
 if __name__ == "__main__":

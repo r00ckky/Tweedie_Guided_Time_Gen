@@ -1,6 +1,7 @@
 """
 Configuration module for VQ-VAE with Transformer architecture.
 All hyperparameters are defined here for easy experimentation.
+Streamlined with unified parameters for encoder/decoder and patch embedding for time-series.
 """
 
 from dataclasses import dataclass
@@ -9,91 +10,113 @@ from typing import Optional
 
 @dataclass
 class VQVAEConfig:
-    """Configuration for VQ-VAE with Transformer backbone."""
+    """Streamlined configuration for VQ-VAE with Transformer backbone and Patch Embedding."""
     
-    # Input and output dimensions
-    input_dim: int = 512
-    output_dim: int = 512
+    # ============================================================
+    # Input and Patch Embedding Parameters
+    # ============================================================
+    input_dim: int = 294  # Feature dimension of raw input
+    patch_size: int = 2  # Patch kernel size for Conv1d embedding
+    patch_stride: int = 2  # Patch stride for Conv1d embedding
+    patch_embed_dim: int = 256  # Output dimension of patch embedding
     
-    # Quantization parameters
-    num_embeddings: int = 512
-    embedding_dim: int = 64
+    # ============================================================
+    # Vector Quantization Parameters
+    # ============================================================
+    num_embeddings: int = 256  # Codebook size
+    embedding_dim: int = 256  # Dimension of VQ embeddings (same as hidden_dim for consistency)
     commitment_cost: float = 0.25
-    decay: float = 0.99
+    decay: float = 0.99  # EMA decay for codebook
     epsilon: float = 1e-5
-
-    # Classification token parameters
-    encoder_class_token: bool = True
-    encoder_class_proj_dim: Optional[int] = 1  # Set to None to disable
     
-    # Encoder parameters
-    encoder_hidden_dim: int = 256
-    encoder_num_layers: int = 2
-    encoder_num_heads: int = 8
-    encoder_ff_dim: int = 512
-    encoder_dropout: float = 0.1
-    encoder_activation: str = "relu"
+    # ============================================================
+    # Transformer Parameters (Unified for Encoder and Decoder)
+    # ============================================================
+    hidden_dim: int = 256  # Transformer hidden dimension (encoder and decoder)
+    num_layers: int = 6  # Number of transformer layers (encoder and decoder)
+    num_heads: int = 8  # Number of attention heads
+    ff_multiplier: int = 2  # Feed-forward dimension = hidden_dim * ff_multiplier
+    dropout: float = 0.1
+    activation: str = "relu"
     
-    # Decoder parameters
-    decoder_hidden_dim: int = 256
-    decoder_num_layers: int = 2
-    decoder_num_heads: int = 8
-    decoder_ff_dim: int = 512
-    decoder_dropout: float = 0.1
-    decoder_activation: str = "relu"
+    # ============================================================
+    # Classification Token Parameters
+    # ============================================================
+    use_class_token: bool = True
+    class_proj_dim: Optional[int] = 1  # Set to None to disable classification head
     
-    # Projection layers
-    use_encoder_projection: bool = True
-    use_decoder_projection: bool = True
-    projection_dropout: float = 0.1
-    
-    # Training parameters
-    learning_rate: float = 1e-3
-    weight_decay: float = 1e-4
-    
-    # Loss weights
+    # ============================================================
+    # Loss Weights
+    # ============================================================
     reconstruction_loss_weight: float = 1.0
     commitment_loss_weight: float = 0.25
-    classification_loss_weight: float = 0.5  # Weight for classification loss
+    classification_loss_weight: float = 0.5
     
-    # Device
+    # ============================================================
+    # Training and Device Parameters
+    # ============================================================
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-4
     device: str = "cuda"
-    
-    # Seed for reproducibility
     seed: int = 42
-    
-    # Sequence parameters
     max_seq_length: int = 512
+    
+    # ============================================================
+    # Derived Properties
+    # ============================================================
+    @property
+    def ff_dim(self) -> int:
+        """Feed-forward dimension derived from hidden_dim."""
+        return self.hidden_dim * self.ff_multiplier
+    
+    @property
+    def encoder_num_layers(self) -> int:
+        """Alias for backwards compatibility."""
+        return self.num_layers
+    
+    @property
+    def decoder_num_layers(self) -> int:
+        """Alias for backwards compatibility."""
+        return self.num_layers
+    
+    @property
+    def encoder_num_heads(self) -> int:
+        """Alias for backwards compatibility."""
+        return self.num_heads
+    
+    @property
+    def decoder_num_heads(self) -> int:
+        """Alias for backwards compatibility."""
+        return self.num_heads
     
     def to_dict(self):
         """Convert config to dictionary."""
         return {
             key: value for key, value in self.__dict__.items()
+            if not key.startswith('_')
         }
     
     def __repr__(self):
         """Pretty print configuration."""
-        lines = ["\nVQ-VAE Configuration:"]
-        for key, value in sorted(self.__dict__.items()):
-            lines.append(f"  {key}: {value}")
-        return "\n".join(lines)
-
-
-@dataclass
-class TransformerConfig:
-    """Configuration for Transformer components."""
-    
-    hidden_dim: int = 256
-    num_heads: int = 8
-    ff_dim: int = 512
-    num_layers: int = 2
-    dropout: float = 0.1
-    activation: str = "relu"
-    layer_norm_eps: float = 1e-6
-    bias: bool = True
-    
-    def to_dict(self):
-        """Convert config to dictionary."""
-        return {
-            key: value for key, value in self.__dict__.items()
+        lines = ["\n" + "="*60]
+        lines.append("VQ-VAE Configuration (Streamlined)")
+        lines.append("="*60)
+        
+        sections = {
+            "Patch Embedding": ["input_dim", "patch_size", "patch_stride", "patch_embed_dim"],
+            "Vector Quantization": ["num_embeddings", "embedding_dim", "commitment_cost", "decay"],
+            "Transformer (Unified)": ["hidden_dim", "num_layers", "num_heads", "ff_multiplier", "dropout"],
+            "Classification": ["use_class_token", "class_proj_dim"],
+            "Loss Weights": ["reconstruction_loss_weight", "commitment_loss_weight", "classification_loss_weight"],
+            "Training": ["learning_rate", "weight_decay", "device", "seed"],
         }
+        
+        for section, keys in sections.items():
+            lines.append(f"\n{section}:")
+            for key in keys:
+                if hasattr(self, key):
+                    value = getattr(self, key)
+                    lines.append(f"  {key}: {value}")
+        
+        lines.append("\n" + "="*60)
+        return "\n".join(lines)
