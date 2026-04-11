@@ -131,6 +131,11 @@ class VQ_VAE(nn.Module):
         
         # Reconstruction projection from patch embeddings back to input
         self.output_projection = nn.Linear(config.patch_embed_dim, config.input_dim)
+        
+        # NaN detection hook storage
+        self._nan_hooks = []
+        self._nan_detected = False
+        self._nan_info = {}
     
     def encode(self, x: torch.Tensor, y: Optional[torch.Tensor], mask: Optional[torch.Tensor] = None, time_tensor: Optional[torch.Tensor] = None) -> Dict:
         """
@@ -312,6 +317,277 @@ class VQ_VAE(nn.Module):
     def get_total_parameters_count(self) -> int:
         """Get total number of parameters."""
         return sum(p.numel() for p in self.parameters())
+    
+    def _get_all_submodules(self, module: nn.Module, prefix: str = "") -> Dict[str, nn.Module]:
+        """
+        Recursively get all submodules with their full paths.
+        
+        Args:
+            module: Root module to traverse
+            prefix: Path prefix for current module
+        
+        Returns:
+            Dictionary mapping full module paths to modules
+        """
+        submodules = {}
+        
+        for name, child in module.named_children():
+            full_name = f"{prefix}.{name}" if prefix else name
+            submodules[full_name] = child
+            
+            # Recursively get submodules of children
+            submodules.update(self._get_all_submodules(child, full_name))
+        
+        return submodules
+    
+    def _create_nan_hook(self, layer_name: str, hook_type: str = "both"):
+        """
+        Create a hook function to detect NaN and Inf values.
+        
+        Args:
+            layer_name: Full path name of the layer for logging
+            hook_type: "pre" (inputs), "post" (outputs), or "both"
+        
+        Returns:
+            Hook function
+        """
+        def pre_hook(module, inputs):
+            """Check for NaN/Inf in inputs."""
+            if hook_type in ["pre", "both"]:
+                for i, inp in enumerate(inputs):
+                    if isinstance(inp, torch.Tensor):
+                        nan_count = torch.isnan(inp).sum().item()
+                        inf_count = torch.isinf(inp).sum().item()
+                        
+                        if nan_count > 0 or inf_count > 0:
+                            self._nan_detected = True
+                            key = f"{layer_name}::input_{i}"
+                            self._nan_info[key] = {
+                                "stage": "pre-forward",
+                                "shape": tuple(inp.shape),
+                                "nan_count": nan_count,
+                                "inf_count": inf_count,
+                                "total_elements": inp.numel(),
+                                "dtype": str(inp.dtype),
+                            }
+                            print(f"🔴 NaN/Inf DETECTED in {layer_name} INPUT {i}")
+                            print(f"   Shape: {inp.shape}, dtype: {inp.dtype}")
+                            print(f"   NaN count: {nan_count}/{inp.numel()}, Inf count: {inf_count}/{inp.numel()}")
+                            if nan_count > 0 or inf_count > 0:
+                                print(f"   Min: {inp[~torch.isnan(inp) & ~torch.isinf(inp)].min() if (nan_count + inf_count) < inp.numel() else 'all NaN/Inf'}")
+                                print(f"   Max: {inp[~torch.isnan(inp) & ~torch.isinf(inp)].max() if (nan_count + inf_count) < inp.numel() else 'all NaN/Inf'}")
+        
+        def post_hook(module, inputs, outputs):
+            """Check for NaN/Inf in outputs."""
+            if hook_type in ["post", "both"]:
+                if isinstance(outputs, torch.Tensor):
+                    nan_count = torch.isnan(outputs).sum().item()
+                    inf_count = torch.isinf(outputs).sum().item()
+                    
+                    if nan_count > 0 or inf_count > 0:
+                        self._nan_detected = True
+                        key = f"{layer_name}::output"
+                        self._nan_info[key] = {
+                            "stage": "post-forward",
+                            "shape": tuple(outputs.shape),
+                            "nan_count": nan_count,
+                            "inf_count": inf_count,
+                            "total_elements": outputs.numel(),
+                            "dtype": str(outputs.dtype),
+                        }
+                        print(f"🔴 NaN/Inf DETECTED in {layer_name} OUTPUT")
+                        print(f"   Shape: {outputs.shape}, dtype: {outputs.dtype}")
+                        print(f"   NaN count: {nan_count}/{outputs.numel()}, Inf count: {inf_count}/{outputs.numel()}")
+                        if nan_count + inf_count < outputs.numel():
+                            valid_vals = outputs[~torch.isnan(outputs) & ~torch.isinf(outputs)]
+                            if valid_vals.numel() > 0:
+                                print(f"   Min: {valid_vals.min():.6e}, Max: {valid_vals.max():.6e}, Mean: {valid_vals.mean():.6e}")
+                
+                elif isinstance(outputs, (tuple, list)):
+                    for i, out in enumerate(outputs):
+                        if isinstance(out, torch.Tensor):
+                            nan_count = torch.isnan(out).sum().item()
+                            inf_count = torch.isinf(out).sum().item()
+                            
+                            if nan_count > 0 or inf_count > 0:
+                                self._nan_detected = True
+                                key = f"{layer_name}::output_{i}"
+                                self._nan_info[key] = {
+                                    "stage": "post-forward",
+                                    "shape": tuple(out.shape),
+                                    "nan_count": nan_count,
+                                    "inf_count": inf_count,
+                                    "total_elements": out.numel(),
+                                    "dtype": str(out.dtype),
+                                }
+                                print(f"🔴 NaN/Inf DETECTED in {layer_name} OUTPUT {i}")
+                                print(f"   Shape: {out.shape}, dtype: {out.dtype}")
+                                print(f"   NaN count: {nan_count}/{out.numel()}, Inf count: {inf_count}/{out.numel()}")
+        
+        if hook_type == "pre":
+            return pre_hook
+        elif hook_type == "post":
+            return post_hook
+        else:  # "both"
+            def combined_hook(module, inputs, outputs=None):
+                if outputs is None:
+                    pre_hook(module, inputs)
+                else:
+                    post_hook(module, inputs, outputs)
+            return combined_hook
+    
+    def register_nan_detection_hooks(self, layer_names: Optional[list] = None, deep: bool = True):
+        """
+        Register NaN detection hooks on specified layers and their submodules.
+        
+        Args:
+            layer_names: List of top-level layer names to monitor. If None, monitors:
+                        ["patch_embedding", "encoder", "vector_quantizer", "decoder", "output_projection"]
+            deep: If True (default), recursively register hooks on all submodules.
+                 If False, only register on top-level layers.
+        
+        Example:
+            >>> model.register_nan_detection_hooks()  # Deep monitoring of all modules
+            >>> model.register_nan_detection_hooks(["encoder", "decoder"])  # Deep monitoring of specific modules
+            >>> model.register_nan_detection_hooks(deep=False)  # Shallow monitoring (top-level only)
+        """
+        if layer_names is None:
+            layer_names = ["patch_embedding", "encoder", "vector_quantizer", "decoder", "output_projection"]
+        
+        # Clear existing hooks
+        self.remove_nan_detection_hooks()
+        
+        for layer_name in layer_names:
+            if hasattr(self, layer_name):
+                layer = getattr(self, layer_name)
+                
+                if deep:
+                    # Get all submodules recursively with their full paths
+                    all_modules = {layer_name: layer}
+                    all_modules.update(self._get_all_submodules(layer, layer_name))
+                    
+                    # Register hooks on all modules
+                    for full_path, module in all_modules.items():
+                        pre_hook = module.register_forward_pre_hook(
+                            lambda m, inp, name=full_path: self._create_nan_hook(name, "pre")(m, inp)
+                        )
+                        post_hook = module.register_forward_hook(
+                            lambda m, inp, out, name=full_path: self._create_nan_hook(name, "post")(m, inp, out)
+                        )
+                        self._nan_hooks.append(pre_hook)
+                        self._nan_hooks.append(post_hook)
+                    
+                    num_modules = len(all_modules)
+                    print(f"✓ Deep NaN detection enabled for {layer_name}: {num_modules} module(s) monitored")
+                else:
+                    # Register only on the top-level layer
+                    pre_hook = layer.register_forward_pre_hook(
+                        lambda m, inp, name=layer_name: self._create_nan_hook(name, "pre")(m, inp)
+                    )
+                    post_hook = layer.register_forward_hook(
+                        lambda m, inp, out, name=layer_name: self._create_nan_hook(name, "post")(m, inp, out)
+                    )
+                    self._nan_hooks.append(pre_hook)
+                    self._nan_hooks.append(post_hook)
+                    print(f"✓ Shallow NaN detection enabled for {layer_name}")
+        
+        hook_count = len(self._nan_hooks)
+        print(f"✓ Total hooks registered: {hook_count}")
+    
+    def remove_nan_detection_hooks(self):
+        """Remove all registered NaN detection hooks."""
+        for hook in self._nan_hooks:
+            hook.remove()
+        self._nan_hooks.clear()
+        print("✓ NaN detection hooks removed")
+    
+    def reset_nan_detection(self):
+        """Reset NaN detection state."""
+        self._nan_detected = False
+        self._nan_info = {}
+    
+    def get_nan_detection_report(self) -> Dict:
+        """
+        Get a report of any NaN values detected.
+        
+        Returns:
+            Dictionary with detection status and details
+        """
+        return {
+            "nan_detected": self._nan_detected,
+            "nan_count": len(self._nan_info),
+            "details": self._nan_info,
+        }
+    
+    def check_numerical_stability(self) -> Dict:
+        """
+        Check model parameters and buffers for NaN/Inf values.
+        
+        Returns:
+            Dictionary with stability status and issues found
+        """
+        issues = {
+            "has_nan_params": False,
+            "has_inf_params": False,
+            "has_nan_grads": False,
+            "has_inf_grads": False,
+            "nan_param_details": [],
+            "inf_param_details": [],
+            "nan_grad_details": [],
+            "inf_grad_details": [],
+        }
+        
+        for name, param in self.named_parameters():
+            # Check weights
+            if torch.isnan(param).any():
+                issues["has_nan_params"] = True
+                issues["nan_param_details"].append(name)
+                print(f"⚠️  NaN found in parameter: {name}")
+            if torch.isinf(param).any():
+                issues["has_inf_params"] = True
+                issues["inf_param_details"].append(name)
+                print(f"⚠️  Inf found in parameter: {name}")
+            
+            # Check gradients
+            if param.grad is not None:
+                if torch.isnan(param.grad).any():
+                    issues["has_nan_grads"] = True
+                    issues["nan_grad_details"].append(name)
+                    print(f"⚠️  NaN found in gradient: {name}")
+                if torch.isinf(param.grad).any():
+                    issues["has_inf_grads"] = True
+                    issues["inf_grad_details"].append(name)
+                    print(f"⚠️  Inf found in gradient: {name}")
+        
+        return issues
+    
+    def clamp_tensor_values(self, max_val: float = 1e4):
+        """
+        Clamp all tensor values to prevent numerical explosion.
+        Useful as a safety measure during training.
+        
+        Args:
+            max_val: Maximum absolute value to clamp to
+        """
+        for param in self.parameters():
+            if param.requires_grad:
+                param.data = torch.clamp(param.data, -max_val, max_val)
+    
+    def apply_activation_clamping(self, model_or_tensor, min_val: float = -1e3, max_val: float = 1e3):
+        """
+        Clamp activation values to prevent explosions.
+        Can be used as a debugging tool.
+        
+        Args:
+            model_or_tensor: Model or tensor to clamp
+            min_val: Minimum value
+            max_val: Maximum value
+        """
+        if isinstance(model_or_tensor, torch.Tensor):
+            return torch.clamp(model_or_tensor, min_val, max_val)
+        else:
+            for param in model_or_tensor.parameters():
+                param.data = torch.clamp(param.data, min_val, max_val)
     
     def summary(self) -> str:
         """Get model summary."""

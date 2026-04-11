@@ -55,10 +55,15 @@ class AmexDataset(Dataset):
         
         sample_features = sample_df.drop(columns=['customer_ID', 'S_2'], errors='ignore')
         
+        sample_features = sample_features.replace([np.inf, -np.inf], np.nan)
+        
         print("Calculating medians...")
-        self.fill_dict = sample_features.median(numeric_only=True).to_dict()
+        medians = sample_features.median(numeric_only=True)
+        
+        self.fill_dict = medians.fillna(0).to_dict()
         
         sample_filled = sample_features.fillna(self.fill_dict)
+        sample_filled = sample_filled.fillna(0) 
         
         print("Fitting Quantile Transformer (This will be instant)...")
         self.transformer.fit(sample_filled)
@@ -70,8 +75,9 @@ class AmexDataset(Dataset):
         return len(self.customer_df)
 
     def __getitem__(self, idx):
-        # Create a new connection for each worker process
-        conn = sqlite3.connect(self.db_path)
+        # Lazy initialization: creates ONE connection per worker process
+        if not hasattr(self, 'conn') or self.conn is None:
+            self.conn = sqlite3.connect(self.db_path)
         
         cust_target = self.customer_df.iloc[idx]
         customer = cust_target['customer_ID']
@@ -80,35 +86,33 @@ class AmexDataset(Dataset):
         query = f"SELECT {self.select_string} FROM statements WHERE customer_ID = '{customer}'"
         
         try:
-            df = pd.read_sql(query, conn)
+            df = pd.read_sql(query, self.conn)
         except Exception as e:
             print(f"Error reading customer {customer}: {e}")
-            conn.close()
             # Return zeros on error
             num_features = len(self.good_cols) - 2
             transformed_data = np.zeros((self.max_seq_len, num_features))
-            cumulative_days = np.zeros(self.max_seq_len)  # FIXED: Defined here for the tensor at the bottom
+            cumulative_days = np.zeros(self.max_seq_len)
         else:
-            conn.close()
-            
             # Handle empty result
             if df.empty:
-                num_features = len(self.good_cols) - 2  # minus customer_ID and S_2
+                num_features = len(self.good_cols) - 2
                 transformed_data = np.zeros((1, num_features))
-                cumulative_days = np.array([0.0])  # FIXED: Defined here
+                cumulative_days = np.array([0.0])
             else:
                 dates = pd.to_datetime(df['S_2'])
-                # Get relative distance from the zeroth time step
                 cumulative_days = (dates - dates.iloc[0]).dt.days.values
                 
                 df = df.drop(columns=['customer_ID', 'S_2'], errors='ignore')
+                df = df.replace([np.inf, -np.inf], np.nan)
+                
                 df = df.fillna(self.fill_dict).infer_objects(copy=False)
+                df = df.fillna(0)
                 
                 transformed_data = self.transformer.transform(df)
             
             seq_len, num_features = transformed_data.shape
             
-            # Pad features and time sequences if necessary
             if seq_len < self.max_seq_len:
                 feature_padding = np.zeros((self.max_seq_len - seq_len, num_features))
                 transformed_data = np.vstack([transformed_data, feature_padding])
@@ -116,12 +120,14 @@ class AmexDataset(Dataset):
                 time_padding = np.zeros(self.max_seq_len - seq_len)
                 cumulative_days = np.concatenate([cumulative_days, time_padding])
         
-        # Slice up to max_seq_len to handle cases where the sequence is longer than the max
         X_tensor = torch.tensor(transformed_data[:self.max_seq_len], dtype=torch.float32)
         
-        # Scaling cumulative days by 365 (optional, but recommended for Transformer stability)
         time_tensor = torch.tensor(cumulative_days[:self.max_seq_len] / 365.0, dtype=torch.float32).unsqueeze(1) 
         
         y_tensor = torch.tensor(float(target), dtype=torch.float32)
         
+        if torch.isnan(X_tensor).any():
+            print(f"CRITICAL WARNING: NaNs still detected in final tensor for customer {customer}!")
+            X_tensor = torch.nan_to_num(X_tensor, nan=0.0) 
+            
         return X_tensor, time_tensor, y_tensor

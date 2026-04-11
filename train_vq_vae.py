@@ -11,6 +11,8 @@ from pathlib import Path
 import logging
 from tqdm import tqdm
 import json
+import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, precision_score, recall_score, confusion_matrix
 
 try:
     import wandb
@@ -23,6 +25,77 @@ from vq_vae.vq_vae import VQ_VAE
 from vq_vae.config import VQVAEConfig
 from args import get_args, create_config_from_args
 import gc
+
+torch.autograd.set_detect_anomaly(True)
+
+
+def compute_classification_metrics(y_true, y_pred):
+    """
+    Compute classification metrics.
+    
+    Args:
+        y_true: True labels (numpy array or list)
+        y_pred: Predicted labels (numpy array or list)
+    
+    Returns:
+        Dictionary containing accuracy, balanced_accuracy, precision, and recall
+    """
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+    
+    metrics = {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
+        "precision": precision_score(y_true, y_pred, average='weighted', zero_division=0),
+        "recall": recall_score(y_true, y_pred, average='weighted', zero_division=0),
+    }
+    return metrics
+
+
+def create_confusion_matrix_plot(y_true, y_pred):
+    """
+    Create a confusion matrix plot.
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+    
+    Returns:
+        matplotlib figure object for logging to wandb
+    """
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+    
+    cm = confusion_matrix(y_true, y_pred)
+    
+    fig, ax = plt.subplots(figsize=(8, 8))
+    
+    # Plot confusion matrix as heatmap
+    im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+    plt.colorbar(im, ax=ax)
+    
+    # Set labels and title
+    classes = np.unique(y_true)
+    tick_marks = np.arange(len(classes))
+    ax.set_xticks(tick_marks)
+    ax.set_yticks(tick_marks)
+    ax.set_xticklabels(classes)
+    ax.set_yticklabels(classes)
+    
+    # Add text annotations
+    thresh = cm.max() / 2.
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(j, i, format(cm[i, j], 'd'),
+                   ha="center", va="center",
+                   color="white" if cm[i, j] > thresh else "black")
+    
+    ax.set_ylabel('True label')
+    ax.set_xlabel('Predicted label')
+    ax.set_title('Confusion Matrix')
+    plt.tight_layout()
+    
+    return fig
 
 
 def setup_logging(output_dir):
@@ -104,40 +177,58 @@ def create_dataloaders(args, logger):
     except Exception as e:
         logger.error(f"Error reading CSV: {e}")
         raise
-    
-    train_data = train_data.sample(frac=1.0, random_state=args.seed).reset_index(drop=True)  # Shuffle data
-    
-    # Validate data integrity
-    logger.info("Validating data integrity...")
-    if 'customer_ID' not in train_data.columns:
-        raise ValueError("Missing 'customer_ID' column in train data")
-    if 'target' not in train_data.columns:
-        raise ValueError("Missing 'target' column in train data")
-    
-    # Check for null values in critical columns
-    null_count = train_data[['customer_ID', 'target']].isnull().sum().sum()
-    if null_count > 0:
-        logger.warning(f"Found {null_count} null values in critical columns. Dropping them...")
-        train_data = train_data.dropna(subset=['customer_ID', 'target']).reset_index(drop=True)
-    
-    logger.info(f"Data validation complete. Final shape: {train_data.shape}")
-    
-    n_customers = len(train_data)
-    val_size = int(0.2 * n_customers)
-    
-    indices = np.random.permutation(n_customers)
-    val_indices = indices[:val_size]
-    train_indices = indices[val_size:]
-    
-    train_customers = train_data.iloc[train_indices]
-    val_customers = train_data.iloc[val_indices]
+    if not args.class_imbalance:
+        train_data = train_data.sample(frac=1.0, random_state=args.seed).reset_index(drop=True)  # Shuffle data
+        
+        # Validate data integrity
+        logger.info("Validating data integrity...")
+        if 'customer_ID' not in train_data.columns:
+            raise ValueError("Missing 'customer_ID' column in train data")
+        if 'target' not in train_data.columns:
+            raise ValueError("Missing 'target' column in train data")
+        
+        # Check for null values in critical columns
+        null_count = train_data[['customer_ID', 'target']].isnull().sum().sum()
+        if null_count > 0:
+            logger.warning(f"Found {null_count} null values in critical columns. Dropping them...")
+            train_data = train_data.dropna(subset=['customer_ID', 'target']).reset_index(drop=True)
+        
+        logger.info(f"Data validation complete. Final shape: {train_data.shape}")
+        
+        n_customers = len(train_data)
+        val_size = int(0.2 * n_customers)
+        
+        indices = np.random.permutation(n_customers)
+        val_indices = indices[:val_size]
+        train_indices = indices[val_size:]
+        
+        train_customers = train_data.iloc[train_indices]
+        val_customers = train_data.iloc[val_indices]
+        logger.info(f"Training customers: {len(train_customers)}, Validation customers: {len(val_customers)}")
     
     if args.debug:
         train_customers = train_customers.iloc[:args.debug_size]
         val_customers = val_customers.iloc[:args.debug_size // 5]
-    
-    logger.info(f"Training customers: {len(train_customers)}, Validation customers: {len(val_customers)}")
-    
+        
+    if args.class_imbalance:
+        logger.info("Using class imbalance handling with weighted sampling.")
+        # Create a balanced validation set
+        pos_customers = train_data[train_data['target'] == 1]
+        neg_customers = train_data[train_data['target'] == 0]
+        
+        val_pos_size = int(0.2 * len(pos_customers))
+        val_neg_size = int(0.2 * len(neg_customers))
+        
+        val_pos_indices = np.random.choice(pos_customers.index, size=val_pos_size, replace=False)
+        val_neg_indices = np.random.choice(neg_customers.index, size=val_neg_size, replace=False)
+        
+        val_indices = np.concatenate([val_pos_indices, val_neg_indices])
+        train_indices = np.setdiff1d(train_data.index, val_indices)
+        
+        train_customers = train_data.loc[train_indices].sample(frac=1.0, random_state=args.seed).reset_index(drop=True)  # Shuffle training data
+        val_customers = train_data.loc[val_indices].sample(frac=1.0, random_state=args.seed).reset_index(drop=True)  # Shuffle validation data
+        
+        logger.info(f"Training customers: {len(train_customers)}, Validation customers: {len(val_customers)}")
     # Create datasets
     logger.info("Creating training dataset...")
     train_dataset = AmexDataset(
@@ -161,7 +252,7 @@ def create_dataloaders(args, logger):
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=0,  # SQLite connections must be in main process
+        num_workers=4,  # SQLite connections must be in main process
         pin_memory=True,
     )
     
@@ -169,7 +260,7 @@ def create_dataloaders(args, logger):
         val_dataset,
         batch_size=args.val_batch_size,
         shuffle=False,
-        num_workers=0,  # SQLite connections must be in main process
+        num_workers=4,  # SQLite connections must be in main process
         pin_memory=True,
     )
     
@@ -188,7 +279,7 @@ def create_model_and_optimizer(args, logger):
     
     model = VQ_VAE(config)
     model = model.to(args.device)
-    
+    model.register_nan_detection_hooks()
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Total parameters: {total_params:,}, Trainable: {trainable_params:,}")
@@ -220,6 +311,10 @@ def train_epoch(model, train_loader, optimizer, device, logger, log_freq, wandb_
     total_cls_loss = 0.0
     num_batches = 0
     
+    # For classification metrics
+    all_labels = []
+    all_predictions = []
+    
     pbar = tqdm(train_loader, desc="Training", leave=True)
     
     for batch_idx, batch in enumerate(pbar):
@@ -229,16 +324,62 @@ def train_epoch(model, train_loader, optimizer, device, logger, log_freq, wandb_
         y = y.to(device)  # Shape: (batch_size,)
         time_tensor = time_tensor.to(device)  # Shape: (batch_size, seq_len, 1)
         
+        # Check input validity
+        if torch.isnan(x).any():
+            logger.warning(f"NaNs detected in input features at batch {batch_idx}. Skipping this batch.")
+            continue
+        if torch.isnan(time_tensor).any():
+            logger.warning(f"NaNs detected in time tensor at batch {batch_idx}. Skipping this batch.")
+            continue
+        if torch.isnan(y).any():
+            logger.warning(f"NaNs detected in target labels at batch {batch_idx}. Skipping this batch.")
+            continue
+        if torch.isinf(x).any() or torch.isinf(time_tensor).any():
+            logger.warning(f"Inf detected in input at batch {batch_idx}. Skipping this batch.")
+            continue
+        
         # Forward pass
         optimizer.zero_grad()
         output = model(x, y, time_tensor=time_tensor)
+        report = model.get_nan_detection_report()
+        
+        # Check for numerical issues in output
+        if report['nan_detected']:
+            logger.error(f"NaN/Inf detected in model output at batch {batch_idx}")
+            # Print stability report
+            stability = model.check_numerical_stability()
+            logger.error(f"Stability report: {stability}")
+            raise ValueError(f"NaN detected in model output at batch {batch_idx}. First detection: {list(report['details'].keys())[0] if report['details'] else 'unknown'}")
         
         loss = output["total_loss"]
+        if torch.isnan(loss) or torch.isinf(loss):
+            logger.warning(f"NaN/Inf detected in loss at batch {batch_idx}. Skipping backward pass for this batch.")
+            continue
         
         # Backward pass
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        # Clamp gradients by norm
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        # Check for gradient issues
+        if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+            logger.warning(f"NaN/Inf detected in gradients at batch {batch_idx}. Skipping optimizer step.")
+            optimizer.zero_grad()
+            continue
+        
+        # Periodically check parameter stability (every 50 batches)
+        if batch_idx % 50 == 0:
+            stability = model.check_numerical_stability()
+            if stability['has_nan_params'] or stability['has_inf_params']:
+                logger.error(f"Numerical instability detected in parameters: {stability}")
+                raise ValueError(f"Bad parameter values at batch {batch_idx}: {stability}")
+        
         optimizer.step()
+        
+        # Reset NaN detection for next batch
+        model.reset_nan_detection()
+        
         # Accumulate losses
         batch_total_loss = output["total_loss"].detach().item()
         batch_recon_loss = output["reconstruction_loss"].detach().item()
@@ -251,6 +392,12 @@ def train_epoch(model, train_loader, optimizer, device, logger, log_freq, wandb_
         total_cls_loss += batch_cls_loss
         num_batches += 1
         
+        # Collect predictions for classification metrics
+        if output["classification_logits"] is not None:
+            predictions = torch.argmax(output["classification_logits"], dim=1).cpu().numpy()
+            all_predictions.extend(predictions)
+            all_labels.extend(y.cpu().numpy())
+        
         # Log to wandb at batch level
         if wandb_run is not None and (batch_idx + 1) % log_freq == 0:
             step = epoch * len(train_loader) + batch_idx if epoch is not None else batch_idx
@@ -259,6 +406,7 @@ def train_epoch(model, train_loader, optimizer, device, logger, log_freq, wandb_
                 "train/batch_reconstruction_loss": batch_recon_loss,
                 "train/batch_vq_loss": batch_vq_loss,
                 "train/batch": step,
+                "train/grad_norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
             }
             if output["classification_loss"] is not None:
                 log_dict["train/batch_classification_loss"] = batch_cls_loss
@@ -274,18 +422,30 @@ def train_epoch(model, train_loader, optimizer, device, logger, log_freq, wandb_
                 "loss": f"{avg_loss:.4f}",
                 "recon": f"{avg_recon:.4f}",
                 "vq": f"{avg_vq:.4f}",
-                "class":f"{avg_cls:.4f}"
+                "grad": f"{grad_norm:.4e}",
             }
             if avg_cls > 0:
                 postfix_dict["cls"] = f"{avg_cls:.4f}"
             pbar.set_postfix(postfix_dict)
     
-    return {
+    # Compute classification metrics
+    metrics_dict = {
         "loss": total_loss / num_batches,
         "reconstruction_loss": total_recon_loss / num_batches,
         "vq_loss": total_vq_loss / num_batches,
         "classification_loss": total_cls_loss / num_batches if total_cls_loss > 0 else 0,
     }
+    
+    if len(all_predictions) > 0 and len(all_labels) > 0:
+        cls_metrics = compute_classification_metrics(all_labels, all_predictions)
+        metrics_dict.update({
+            "accuracy": cls_metrics["accuracy"],
+            "balanced_accuracy": cls_metrics["balanced_accuracy"],
+            "precision": cls_metrics["precision"],
+            "recall": cls_metrics["recall"],
+        })
+    
+    return metrics_dict
 
 
 def validate(model, val_loader, device, logger, wandb_run=None, epoch=None):
@@ -296,6 +456,10 @@ def validate(model, val_loader, device, logger, wandb_run=None, epoch=None):
     total_vq_loss = 0.0
     total_cls_loss = 0.0
     num_batches = 0
+    
+    # For classification metrics
+    all_labels = []
+    all_predictions = []
     
     with torch.no_grad():
         pbar = tqdm(val_loader, desc="Validating", leave=True)
@@ -319,6 +483,12 @@ def validate(model, val_loader, device, logger, wandb_run=None, epoch=None):
             total_cls_loss += batch_cls_loss
             num_batches += 1
             
+            # Collect predictions for classification metrics
+            if output["classification_logits"] is not None:
+                predictions = torch.argmax(output["classification_logits"], dim=1).cpu().numpy()
+                all_predictions.extend(predictions)
+                all_labels.extend(y.cpu().numpy())
+            
             postfix = {"val_loss": f"{total_loss / num_batches:.4f}"}
             if total_cls_loss > 0:
                 postfix["val_cls"] = f"{total_cls_loss / num_batches:.4f}"
@@ -329,12 +499,28 @@ def validate(model, val_loader, device, logger, wandb_run=None, epoch=None):
     avg_vq_loss = total_vq_loss / num_batches
     avg_cls_loss = total_cls_loss / num_batches if total_cls_loss > 0 else 0.0
     
-    return {
+    # Compute classification metrics
+    metrics_dict = {
         "loss": avg_loss,
         "reconstruction_loss": avg_recon_loss,
         "vq_loss": avg_vq_loss,
         "classification_loss": avg_cls_loss,
     }
+    
+    if len(all_predictions) > 0 and len(all_labels) > 0:
+        cls_metrics = compute_classification_metrics(all_labels, all_predictions)
+        metrics_dict.update({
+            "accuracy": cls_metrics["accuracy"],
+            "balanced_accuracy": cls_metrics["balanced_accuracy"],
+            "precision": cls_metrics["precision"],
+            "recall": cls_metrics["recall"],
+        })
+        
+        # Create confusion matrix plot
+        cm_fig = create_confusion_matrix_plot(all_labels, all_predictions)
+        metrics_dict["confusion_matrix_fig"] = cm_fig
+    
+    return metrics_dict
 
 
 def save_checkpoint(model, optimizer, scheduler, epoch, metrics, output_dir, best=False):
@@ -391,6 +577,10 @@ def main():
     # Create model and optimizer
     model, optimizer, scheduler, config = create_model_and_optimizer(args, logger)
     
+    # Register NaN detection hooks for debugging
+    logger.info("Registering NaN/Inf detection hooks...")
+    model.register_nan_detection_hooks(deep=True)
+    
     # Resume from checkpoint if specified
     start_epoch = 0
     best_val_loss = float("inf")
@@ -432,11 +622,21 @@ def main():
         logger.info(f"  - VQ Loss: {train_metrics['vq_loss']:.6f}")
         if train_metrics.get('classification_loss', 0) > 0:
             logger.info(f"  - Classification Loss: {train_metrics['classification_loss']:.6f}")
+        if train_metrics.get('accuracy') is not None:
+            logger.info(f"  - Accuracy: {train_metrics['accuracy']:.4f}")
+            logger.info(f"  - Balanced Accuracy: {train_metrics['balanced_accuracy']:.4f}")
+            logger.info(f"  - Precision: {train_metrics['precision']:.4f}")
+            logger.info(f"  - Recall: {train_metrics['recall']:.4f}")
         logger.info(f"Val Loss: {val_metrics['loss']:.6f}")
         logger.info(f"  - Reconstruction: {val_metrics['reconstruction_loss']:.6f}")
         logger.info(f"  - VQ Loss: {val_metrics['vq_loss']:.6f}")
         if val_metrics.get('classification_loss', 0) > 0:
             logger.info(f"  - Classification Loss: {val_metrics['classification_loss']:.6f}")
+        if val_metrics.get('accuracy') is not None:
+            logger.info(f"  - Accuracy: {val_metrics['accuracy']:.4f}")
+            logger.info(f"  - Balanced Accuracy: {val_metrics['balanced_accuracy']:.4f}")
+            logger.info(f"  - Precision: {val_metrics['precision']:.4f}")
+            logger.info(f"  - Recall: {val_metrics['recall']:.4f}")
         logger.info(f"Learning Rate: {current_lr:.2e}")
         
         # Log to wandb at epoch level
@@ -454,7 +654,30 @@ def main():
             if train_metrics.get('classification_loss', 0) > 0:
                 wandb_log_dict["train/classification_loss"] = train_metrics["classification_loss"]
                 wandb_log_dict["val/classification_loss"] = val_metrics["classification_loss"]
+            
+            # Log classification metrics for training
+            if train_metrics.get('accuracy') is not None:
+                wandb_log_dict["train/accuracy"] = train_metrics["accuracy"]
+                wandb_log_dict["train/balanced_accuracy"] = train_metrics["balanced_accuracy"]
+                wandb_log_dict["train/precision"] = train_metrics["precision"]
+                wandb_log_dict["train/recall"] = train_metrics["recall"]
+            
+            # Log classification metrics for validation
+            if val_metrics.get('accuracy') is not None:
+                wandb_log_dict["val/accuracy"] = val_metrics["accuracy"]
+                wandb_log_dict["val/balanced_accuracy"] = val_metrics["balanced_accuracy"]
+                wandb_log_dict["val/precision"] = val_metrics["precision"]
+                wandb_log_dict["val/recall"] = val_metrics["recall"]
+                
+                # Log confusion matrix
+                if val_metrics.get('confusion_matrix_fig') is not None:
+                    wandb_log_dict["val/confusion_matrix"] = wandb.Image(val_metrics["confusion_matrix_fig"])
+            
             wandb_run.log(wandb_log_dict)
+            
+            # Close confusion matrix figure to free memory
+            if val_metrics.get('confusion_matrix_fig') is not None:
+                plt.close(val_metrics["confusion_matrix_fig"])
         
         epoch_metrics = {
             "epoch": epoch,

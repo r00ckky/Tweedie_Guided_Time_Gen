@@ -104,11 +104,19 @@ class TransformerDecoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
         
-        # Project embedding to hidden dimension
+        # Project embedding to hidden dimension with careful initialization
         self.input_projection = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim),
             nn.LayerNorm(hidden_dim, eps=layer_norm_eps),
         )
+        
+        # Initialize linear layer properly to avoid exploding gradients
+        with torch.no_grad():
+            for module in self.input_projection:
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_uniform_(module.weight, gain=1.0)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
         
         # Stack of transformer blocks
         self.transformer_blocks = nn.ModuleList([
@@ -125,6 +133,12 @@ class TransformerDecoder(nn.Module):
         
         # Project to output dimension
         self.output_projection = nn.Linear(hidden_dim, output_dim)
+        
+        # Initialize output projection
+        with torch.no_grad():
+            nn.init.xavier_uniform_(self.output_projection.weight, gain=1.0)
+            if self.output_projection.bias is not None:
+                nn.init.zeros_(self.output_projection.bias)
     
     def forward(
         self,
@@ -141,12 +155,31 @@ class TransformerDecoder(nn.Module):
         Returns:
             Decoded tensor of shape (batch_size, seq_len, output_dim)
         """
+        # Check input for NaN/Inf
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            print(f"⚠️  WARNING: NaN/Inf detected in decoder input!")
+            print(f"   Input stats: min={x.min()}, max={x.max()}, mean={x.mean()}")
+            # Clamp to safe range
+            x = torch.clamp(x, -1e3, 1e3)
+        
         # Project embedding to hidden dimension
         x = self.input_projection(x)
+        
+        # Add numerical stability check after projection
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            print(f"⚠️  WARNING: NaN/Inf detected after input projection!")
+            print(f"   After projection stats: min={x.min()}, max={x.max()}, mean={x.mean()}")
+            x = torch.clamp(x, -1e3, 1e3)
         
         # Apply transformer blocks
         for block in self.transformer_blocks:
             x = block(x, self_attn_mask=self_attn_mask)
+            
+            # Check for numerical issues after each block
+            if torch.isnan(x).any() or torch.isinf(x).any():
+                print(f"⚠️  WARNING: NaN/Inf detected after transformer block!")
+                print(f"   Block output stats: min={x.min()}, max={x.max()}, mean={x.mean()}")
+                x = torch.clamp(x, -1e3, 1e3)
         
         # Project to output dimension
         x = self.output_projection(x)

@@ -13,13 +13,14 @@ TRAIN_DATA="${DATA_DIR}/train_data.csv"
 TRAIN_LABELS="${DATA_DIR}/train_labels.csv"
 DB_PATH="${DATA_DIR}/amex_data.db"
 MAX_SEQ_LEN=14
-BATCH_SIZE=32
+BATCH_SIZE=256
 NUM_WORKERS=4
 NUM_EPOCHS=20
+CLASS_IMBALANCE=true
 
 # Model Architecture Configuration - Streamlined
 # Patch Embedding
-INPUT_DIM=294
+INPUT_DIM=147
 PATCH_SIZE=2
 PATCH_STRIDE=2
 PATCH_EMBED_DIM=256
@@ -55,13 +56,13 @@ COMMITMENT_LOSS_WEIGHT=0.25
 CLASSIFICATION_LOSS_WEIGHT=0.5
 
 # Output and Logging
-CHECKPOINT_DIR="/home/chaitanya-kohli/Amex/TimeVQDM/checkpoints/checkpoints_$(date +%Y%m%d_%H%M%S)"
+CHECKPOINT_DIR="/home/chaitanya-kohli/Amex/TimeVQDM/checkpoints/checkpoints_cls_${CLASSIFICATION_LOSS_WEIGHT}_$(date +%d%m_%H%M%S)"
 mkdir -p "${CHECKPOINT_DIR}"
 
 # Weights & Biases Configuration
 WANDB_PROJECT="vq-vae-amex"
 WANDB_ENTITY=""
-WANDB_RUN_NAME="vq_vae_run_$(date +%Y%m%d_%H%M%S)"
+WANDB_RUN_NAME="vq_vae_run_cls_${CLASSIFICATION_LOSS_WEIGHT}_$(date +%d%m_%H%M%S)"
 WANDB_SAVE_DIR="${CHECKPOINT_DIR}/wandb"
 WANDB_NOTES=""
 WANDB_TAGS=()
@@ -81,7 +82,6 @@ RESUME_FROM=""
 # ============================================================================
 
 cd /home/chaitanya-kohli/Amex/TimeVQDM
-
 export PYTHONPATH="/home/chaitanya-kohli/Amex/TimeVQDM:${PYTHONPATH:-}"
 
 CUDA_VISIBLE_DEVICES=0 python train_vq_vae.py \
@@ -130,4 +130,5 @@ CUDA_VISIBLE_DEVICES=0 python train_vq_vae.py \
     --wandb-run-name "${WANDB_RUN_NAME}" \
     --wandb-save-dir "${WANDB_SAVE_DIR}" \
     --use-wandb
+    $([ "${CLASS_IMBALANCE}" = true ] && echo "--class-imbalance")
 echo "Training completed! Checkpoints saved to ${CHECKPOINT_DIR}"

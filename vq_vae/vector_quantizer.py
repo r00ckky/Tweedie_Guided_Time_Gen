@@ -103,6 +103,13 @@ class VectorQuantizer(nn.Module):
         quantized = F.embedding(encoding_indices, self.embeddings.weight)
         quantized = quantized.reshape(input_shape)
         
+        # Check for numerical issues in quantized values
+        if torch.isnan(quantized).any() or torch.isinf(quantized).any():
+            print(f"⚠️  WARNING: NaN/Inf detected in quantized output!")
+            print(f"   Quantized stats: min={quantized.min()}, max={quantized.max()}, mean={quantized.mean()}")
+            # Clamp problematic values
+            quantized = torch.clamp(quantized, -1e3, 1e3)
+        
         # Track usage
         tracker_info = {}
         if self.use_tracker and self.tracker is not None:
@@ -161,22 +168,44 @@ class VectorQuantizer(nn.Module):
         encoding_indices: torch.Tensor,
     ):
         """Update embeddings using exponential moving average."""
+        # Numerically stable cluster size update
         updated_cluster_size = (
             self.decay * self.cluster_size
             + (1 - self.decay) * torch.sum(encodings, dim=0)
         )
         
+        # Ensure cluster_size doesn't have NaN/Inf
+        updated_cluster_size = torch.clamp(updated_cluster_size, min=self.epsilon)
+        
         dw = torch.matmul(encodings.t(), flat_inputs)
         updated_w = self.decay * self.w + (1 - self.decay) * dw
         
+        # Clamp updated_w to prevent explosion
+        updated_w = torch.clamp(updated_w, -1e3, 1e3)
+        
         n = torch.sum(updated_cluster_size)
+        n = torch.clamp(n, min=self.epsilon)  # Prevent division by zero
+        
         updated_cluster_size = (
             (updated_cluster_size + self.epsilon)
             / (n + self.num_embeddings * self.epsilon)
             * n
         )
         
-        normalised_updated_w = updated_w / updated_cluster_size.unsqueeze(1)
+        # Numerically stable normalization with safe division
+        # Add epsilon before division to prevent inf
+        normalised_updated_w = updated_w / (updated_cluster_size.unsqueeze(1) + self.epsilon)
+        
+        # Clamp result to prevent inf/nan
+        normalised_updated_w = torch.clamp(normalised_updated_w, -1e3, 1e3)
+        
+        # Check for bad values and log warning
+        if torch.isnan(normalised_updated_w).any() or torch.isinf(normalised_updated_w).any():
+            print(f"⚠️  WARNING: NaN/Inf detected in EMA update!")
+            print(f"   Before clamp: min={updated_w.min()}, max={updated_w.max()}")
+            print(f"   Cluster sizes: min={updated_cluster_size.min()}, max={updated_cluster_size.max()}")
+            # Reinitialize to safe values
+            normalised_updated_w = torch.clamp(normalised_updated_w, -1e3, 1e3)
         
         self.cluster_size.data = updated_cluster_size
         self.w.data = normalised_updated_w

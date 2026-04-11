@@ -126,8 +126,14 @@ class TransformerEncoder(nn.Module):
         # Project to embedding dimension
         self.output_projection = nn.Linear(hidden_dim, embedding_dim)
         # Classification head projects from embedding_dim (not hidden_dim) after output_projection
-        self.class_proj = nn.Linear(embedding_dim, class_proj_dim) if class_token and class_proj_dim is not None else None
-    
+        self.class_proj = nn.Sequential(
+            nn.LayerNorm(embedding_dim),
+            nn.Linear(embedding_dim, embedding_dim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embedding_dim // 2, class_proj_dim)
+        ) if class_token and class_proj_dim is not None else None
+        
     def forward(
             self, 
             x: Tensor,
@@ -177,14 +183,11 @@ class TransformerEncoder(nn.Module):
             # Compute loss if targets provided
             if y is not None:
                 if cls_logits.shape[-1] == 1:
-                    # Binary classification
+                    # Binary classification - use BCEWithLogitsLoss for numerical stability
                     cls_logits_squeezed = cls_logits.squeeze(-1)  # (batch_size,)
-                    cls_logits_prob = torch.sigmoid(cls_logits_squeezed)  # Apply sigmoid
-                    loss_fn = nn.BCELoss()
-                    cls_loss = loss_fn(cls_logits_prob, y.float())
+                    loss_fn = nn.BCEWithLogitsLoss()
+                    cls_loss = loss_fn(cls_logits_squeezed, y.float())
                 else:
-                    # Multi-class classification
-                    cls_logits_prob = F.softmax(cls_logits, dim=-1)  # Apply softmax
                     loss_fn = nn.CrossEntropyLoss()
                     cls_loss = loss_fn(cls_logits, y.long())
             

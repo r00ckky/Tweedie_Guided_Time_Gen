@@ -45,6 +45,11 @@ def get_args():
         default=13,
         help="Maximum sequence length for time-series samples",
     )
+    data_group.add_argument(
+        "--class_imbalance",
+        action="store_true",
+        help="Whether to use class imbalance handling (e.g., weighted sampling)",
+    )
     
     # Model arguments - Patch Embedding
     model_group = parser.add_argument_group("Model - Patch Embedding")
