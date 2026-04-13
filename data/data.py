@@ -39,7 +39,7 @@ class AmexDataset(Dataset):
 
     def fit_transform(self):
         print("Pulling sample data to fit the Transformer...")
-        customer_samples = self.customer_df.sample(n=1000, random_state=42)['customer_ID'].tolist()
+        customer_samples = self.customer_df.sample(n=50000, random_state=42)['customer_ID'].tolist()
         
         conn = sqlite3.connect(self.db_path)
         all_data = []

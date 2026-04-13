@@ -139,7 +139,7 @@ class TransformerDecoder(nn.Module):
             nn.init.xavier_uniform_(self.output_projection.weight, gain=1.0)
             if self.output_projection.bias is not None:
                 nn.init.zeros_(self.output_projection.bias)
-    
+                
     def forward(
         self,
         x: torch.Tensor,

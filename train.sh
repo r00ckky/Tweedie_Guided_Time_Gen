@@ -17,6 +17,7 @@ BATCH_SIZE=256
 NUM_WORKERS=4
 NUM_EPOCHS=20
 CLASS_IMBALANCE=true
+CLASS_FUNC='knn'
 
 # Model Architecture Configuration - Streamlined
 # Patch Embedding
@@ -26,7 +27,7 @@ PATCH_STRIDE=2
 PATCH_EMBED_DIM=256
 
 # Vector Quantization
-NUM_EMBEDDINGS=256
+NUM_EMBEDDINGS=768
 EMBEDDING_DIM=256
 COMMITMENT_COST=0.25
 
@@ -34,7 +35,7 @@ COMMITMENT_COST=0.25
 HIDDEN_DIM=256
 NUM_LAYERS=6
 NUM_HEADS=8
-FF_MULTIPLIER=2
+FF_MULTIPLIER=4
 DROPOUT=0.1
 
 # Classification
@@ -56,13 +57,13 @@ COMMITMENT_LOSS_WEIGHT=0.25
 CLASSIFICATION_LOSS_WEIGHT=0.5
 
 # Output and Logging
-CHECKPOINT_DIR="/home/chaitanya-kohli/Amex/TimeVQDM/checkpoints/checkpoints_cls_${CLASSIFICATION_LOSS_WEIGHT}_$(date +%d%m_%H%M%S)"
+CHECKPOINT_DIR="/home/chaitanya-kohli/Amex/TimeVQDM/checkpoints/${CLASS_FUNC}_${CLASSIFICATION_LOSS_WEIGHT}_l${NUM_LAYERS}h${NUM_HEADS}_$(date +%d%m_%H%M%S)"
 mkdir -p "${CHECKPOINT_DIR}"
 
 # Weights & Biases Configuration
 WANDB_PROJECT="vq-vae-amex"
 WANDB_ENTITY=""
-WANDB_RUN_NAME="vq_vae_run_cls_${CLASSIFICATION_LOSS_WEIGHT}_$(date +%d%m_%H%M%S)"
+WANDB_RUN_NAME="${CLASS_FUNC}_${CLASSIFICATION_LOSS_WEIGHT}_l${NUM_LAYERS}h${NUM_HEADS}_$(date +%d%m_%H%M%S)"
 WANDB_SAVE_DIR="${CHECKPOINT_DIR}/wandb"
 WANDB_NOTES=""
 WANDB_TAGS=()
@@ -129,6 +130,8 @@ CUDA_VISIBLE_DEVICES=0 python train_vq_vae.py \
     $([ ${#WANDB_TAGS[@]} -gt 0 ] && echo "--wandb-tags ${WANDB_TAGS[@]}") \
     --wandb-run-name "${WANDB_RUN_NAME}" \
     --wandb-save-dir "${WANDB_SAVE_DIR}" \
-    --use-wandb
-    $([ "${CLASS_IMBALANCE}" = true ] && echo "--class-imbalance")
+    --use-wandb \
+    $([ "${CLASS_IMBALANCE}" = true ] && echo "--class_imbalance") \
+    --class_func ${CLASS_FUNC} \
+
 echo "Training completed! Checkpoints saved to ${CHECKPOINT_DIR}"

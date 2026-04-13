@@ -44,6 +44,7 @@ class VQVAEConfig:
     # ============================================================
     use_class_token: bool = True
     class_proj_dim: Optional[int] = 1  # Set to None to disable classification head
+    class_func:str='knn'
     
     # ============================================================
     # Loss Weights
@@ -51,6 +52,7 @@ class VQVAEConfig:
     reconstruction_loss_weight: float = 1.0
     commitment_loss_weight: float = 0.25
     classification_loss_weight: float = 0.5
+    koleo_penalty_weight:float=0.1
     
     # ============================================================
     # Training and Device Parameters

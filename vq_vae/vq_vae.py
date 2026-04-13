@@ -106,6 +106,8 @@ class VQ_VAE(nn.Module):
             activation="relu",
             class_token=config.use_class_token,
             class_proj_dim=config.class_proj_dim,
+            class_func=config.class_func,
+            koleo_penalty_weight = config.koleo_penalty_weight,
         )
         
         # Vector Quantizer
@@ -121,7 +123,7 @@ class VQ_VAE(nn.Module):
         self.decoder = TransformerDecoder(
             embedding_dim=config.embedding_dim,
             hidden_dim=config.hidden_dim,
-            output_dim=config.patch_embed_dim,  # Decoder outputs patch_embed_dim
+            output_dim=config.input_dim*config.patch_size,  # Decoder outputs patch_embed_dim
             num_layers=config.num_layers,
             num_heads=config.num_heads,
             ff_dim=config.ff_dim,
@@ -196,9 +198,9 @@ class VQ_VAE(nn.Module):
         """
         # Decode: (batch, num_patches, embedding_dim) -> (batch, num_patches, patch_embed_dim)
         patch_recon = self.decoder(z_q, self_attn_mask=mask)
-        
+        recon = patch_recon.permute(0, 2, 1).reshape(z_q.size(0), -1, self.config.input_dim)  # (batch, input_dim, num_patches)
         # Return patch-level reconstruction for loss computation
-        return patch_recon
+        return recon
     
     def forward(
         self,
@@ -232,14 +234,13 @@ class VQ_VAE(nn.Module):
         # Encode and quantize
         encode_output = self.encode(x, y, mask=mask, time_tensor=time_tensor)
         z_q = encode_output["z_q"]
-        x_patch = encode_output["x_patch"]
         
         # Decode
         reconstruction = self.decode(z_q, mask=mask)
         
         # Compute reconstruction loss at patch level
         # Both reconstruction and x_patch are shape (batch, num_patches, patch_embed_dim)
-        reconstruction_loss = nn.functional.mse_loss(reconstruction, x_patch)
+        reconstruction_loss = nn.functional.mse_loss(reconstruction, x)
         vq_loss = encode_output["loss"]
         
         # Compute total loss including classification if available

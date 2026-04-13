@@ -86,6 +86,7 @@ class TransformerEncoder(nn.Module):
         input_dim: int,
         hidden_dim: int,
         embedding_dim: int,
+        class_func:str,
         class_token: bool = True,
         class_proj_dim: Optional[int] = 1,
         num_layers: int = 2,
@@ -94,13 +95,15 @@ class TransformerEncoder(nn.Module):
         dropout: float = 0.1,
         activation: str = "relu",
         layer_norm_eps: float = 1e-6,
+        koleo_penalty_weight:Optional[float]=None,
     ):
         super().__init__()
         
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.embedding_dim = embedding_dim
-        
+        self.class_func = class_func
+        self.koleo_penalty_weight=koleo_penalty_weight
         # Project input to hidden dimension
         self.input_projection = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -126,21 +129,55 @@ class TransformerEncoder(nn.Module):
         # Project to embedding dimension
         self.output_projection = nn.Linear(hidden_dim, embedding_dim)
         # Classification head projects from embedding_dim (not hidden_dim) after output_projection
-        self.class_proj = nn.Sequential(
-            nn.LayerNorm(embedding_dim),
-            nn.Linear(embedding_dim, embedding_dim // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(embedding_dim // 2, class_proj_dim)
-        ) if class_token and class_proj_dim is not None else None
+        if self.class_func=='entropy':
+            self.class_proj = nn.Sequential(
+                nn.LayerNorm(embedding_dim),
+                nn.Linear(embedding_dim, embedding_dim // 2),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(embedding_dim // 2, class_proj_dim)
+            ) if class_token and class_proj_dim is not None else None
+
+        elif self.class_func == 'knn':
+            num_class = class_proj_dim + 1 if class_proj_dim == 1 else class_proj_dim
+            self.class_proj = nn.Parameter(torch.empty(num_class, embedding_dim))
+            nn.init.xavier_normal_(self.class_proj)
+    
+    def compute_koleo_loss(
+            self,
+            centers: torch.Tensor, 
+            eps: float = 1e-8
+        ) -> torch.Tensor:
+        """
+        Computes Kozachenko-Leonenko (KoLeo) loss to enforce uniformity among class centers.
+        """
+        # 1. L2 Normalize to prevent magnitude explosion
+        norm_centers = F.normalize(centers, p=2, dim=-1)
         
+        # 2. Compute pairwise Euclidean distances
+        distances = torch.cdist(norm_centers, norm_centers, p=2.0)
+        
+        # 3. Clone the tensor before the in-place operation!
+        # This saves the original 'distances' for the backward pass
+        distances_cloned = distances.clone()
+        
+        # 4. Mask out self-distances
+        distances_cloned.fill_diagonal_(float('inf'))
+        
+        # 5. Find the distance to the *nearest neighbor* for each center
+        min_distances, _ = distances_cloned.min(dim=1)
+        
+        # 6. KoLeo is the negative mean log of nearest neighbor distances
+        loss = -torch.mean(torch.log(min_distances + eps))
+        
+        return loss
+
     def forward(
             self, 
             x: Tensor,
             y: Tensor,
             time_tensor:Tensor, 
             mask: Optional[Tensor] = None,
-            
         ):
         """
         Encode input to latent representation.
@@ -168,23 +205,18 @@ class TransformerEncoder(nn.Module):
         for block in self.transformer_blocks:
             x = block(x, mask=mask)
         
-        # Project to embedding dimension
         x = self.output_projection(x)
         
-        # Extract classification tokens if needed
-        if self.class_proj is not None:
-            cls_token_hidden = x[:, 0]  # Extract CLS token: (batch_size, embedding_dim)
-            z = x[:, 1:]  # Keep all sequence tokens: (batch_size, seq_len, embedding_dim)
-            
-            # Apply classification projection
+        if self.class_proj is not None and self.class_func=='entropy':
+            cls_token_hidden = x[:, 0]
+            z = x[:, 1:]
+
             cls_logits = self.class_proj(cls_token_hidden)  # (batch_size, class_proj_dim)
             cls_loss = None
-            
-            # Compute loss if targets provided
+
             if y is not None:
                 if cls_logits.shape[-1] == 1:
-                    # Binary classification - use BCEWithLogitsLoss for numerical stability
-                    cls_logits_squeezed = cls_logits.squeeze(-1)  # (batch_size,)
+                    cls_logits_squeezed = cls_logits.squeeze(-1) 
                     loss_fn = nn.BCEWithLogitsLoss()
                     cls_loss = loss_fn(cls_logits_squeezed, y.float())
                 else:
@@ -193,5 +225,24 @@ class TransformerEncoder(nn.Module):
             
             return z, cls_logits, cls_loss
         
-        # No classification head - return full sequence
+        elif self.class_func == 'knn':
+            cls_tokens = x[:, 0]  
+            z = x[:, 1:]
+            dist_sq = torch.cdist(cls_tokens, self.class_proj, p=2.0) ** 2
+            
+            cls_logits = -dist_sq
+            cls_loss = None
+            
+            if y is not None:
+                loss_fn = nn.CrossEntropyLoss()
+                classification_loss = loss_fn(cls_logits, y.long())
+                koleo_penalty = 0.0
+                if self.class_proj.size(0) > 1:
+                    koleo_penalty = self.compute_koleo_loss(self.class_proj)
+                
+                koleo_weight = self.koleo_penalty_weight if self.koleo_penalty_weight is not None else 0
+                cls_loss = classification_loss + (koleo_weight * koleo_penalty)
+                    
+            return z, cls_logits, cls_loss
+        
         return x, None, None

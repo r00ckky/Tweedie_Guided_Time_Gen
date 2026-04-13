@@ -145,6 +145,13 @@ def get_args():
         default=1,
         help="Dimension of the classification projection layer",
     )
+    class_group.add_argument(
+        "--class_func",
+        type=str,
+        choices=['entropy', 'knn'],
+        help="Classification methodology",
+        default='knn',
+    )
 
     # Training arguments
     train_group = parser.add_argument_group("Training")
@@ -211,6 +218,11 @@ def get_args():
         default=0.5,
         help="Weight for classification loss (if classification head is used)",
     )
+    loss_group.add_argument(
+        "--koleo_penalty_weight",
+        type=float,
+        default=0.01,
+    )
     
     # Logging and checkpointing arguments
     logging_group = parser.add_argument_group("Logging and Checkpointing")
@@ -229,7 +241,7 @@ def get_args():
     logging_group.add_argument(
         "--log-freq",
         type=int,
-        default=10,
+        default=100,
         help="Log metrics every N batches",
     )
     logging_group.add_argument(
@@ -335,6 +347,7 @@ def create_config_from_args(args):
         num_embeddings=args.num_embeddings,
         embedding_dim=args.embedding_dim,
         commitment_cost=args.commitment_cost,
+        koleo_penalty_weight=args.koleo_penalty_weight,
         # Transformer (Unified)
         hidden_dim=args.hidden_dim,
         num_layers=args.num_layers,
@@ -344,6 +357,7 @@ def create_config_from_args(args):
         # Classification
         use_class_token=args.use_class_token,
         class_proj_dim=args.class_proj_dim,
+        class_func=args.class_func,
         # Loss Weights
         reconstruction_loss_weight=args.reconstruction_loss_weight,
         commitment_loss_weight=args.commitment_loss_weight,

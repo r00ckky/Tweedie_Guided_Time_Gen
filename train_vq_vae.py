@@ -209,7 +209,7 @@ def create_dataloaders(args, logger):
     if args.debug:
         train_customers = train_customers.iloc[:args.debug_size]
         val_customers = val_customers.iloc[:args.debug_size // 5]
-        
+
     if args.class_imbalance:
         logger.info("Using class imbalance handling with weighted sampling.")
         # Create a balanced validation set
@@ -252,7 +252,7 @@ def create_dataloaders(args, logger):
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=4,  # SQLite connections must be in main process
+        num_workers=8,  # SQLite connections must be in main process
         pin_memory=True,
     )
     
@@ -260,7 +260,7 @@ def create_dataloaders(args, logger):
         val_dataset,
         batch_size=args.val_batch_size,
         shuffle=False,
-        num_workers=4,  # SQLite connections must be in main process
+        num_workers=8,  # SQLite connections must be in main process
         pin_memory=True,
     )
     
