@@ -246,13 +246,30 @@ def create_dataloaders(args, logger):
         max_seq_len=args.max_seq_len,
     )
     
-    # Create dataloaders
-    # Note: SQLite is not thread-safe, so we must use num_workers=0
+    if args.class_imbalance:
+        logger.info("Configuring WeightedRandomSampler for 50/50 batch generation...")
+        targets = train_customers['target'].values
+        
+        class_counts = np.bincount(targets)
+        class_weights = 1.0 / torch.tensor(class_counts, dtype=torch.float)
+        sample_weights = class_weights[targets]
+        train_sampler = torch.utils.data.WeightedRandomSampler(
+            weights=sample_weights,
+            num_samples=len(sample_weights),
+            replacement=True
+        )
+        
+        train_shuffle = False
+    else:
+        train_sampler = None
+        train_shuffle = True
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=8,  # SQLite connections must be in main process
+        shuffle=train_shuffle, 
+        sampler=train_sampler,
+        num_workers=4,  
         pin_memory=True,
     )
     
@@ -260,7 +277,7 @@ def create_dataloaders(args, logger):
         val_dataset,
         batch_size=args.val_batch_size,
         shuffle=False,
-        num_workers=8,  # SQLite connections must be in main process
+        num_workers=4,  
         pin_memory=True,
     )
     
