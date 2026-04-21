@@ -6,8 +6,8 @@ import argparse
 from pathlib import Path
 
 
-def get_args():
-    """Parse and return command-line arguments."""
+def get_base_parser():
+    """Build the base argument parser for VQ-VAE."""
     parser = argparse.ArgumentParser(
         description="Train VQ-VAE model on AMEX time-series data",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -330,7 +330,12 @@ def get_args():
         help="Path to checkpoint to resume training from",
     )
     
-    return parser.parse_args()
+    return parser
+
+
+def get_args():
+    """Parse and return command-line arguments for VQ-VAE."""
+    return get_base_parser().parse_args()
 
 
 def create_config_from_args(args):
@@ -371,6 +376,91 @@ def create_config_from_args(args):
     )
     return config
 
+
+def get_dit_parser():
+    """Build the argument parser for Latent Diffusion / DiT."""
+    parser = get_base_parser()
+    parser.description = "Train Latent Diffusion Transformer (DiT) on AMEX time-series data"
+    
+    # Override defaults that make more sense for DiT
+    parser.set_defaults(
+        learning_rate=1e-4,
+        output_dir=Path("./dit_output"),
+        wandb_project="amex-latent-diffusion",
+        num_epochs=100,
+    )
+    
+    # DiT Architecture arguments
+    dit_group = parser.add_argument_group("Model - DiT Architecture")
+    dit_group.add_argument("--dit-hidden-dim", type=int, default=256, help="Internal transformer width H")
+    dit_group.add_argument("--dit-cond-dim", type=int, default=256, help="Timestep/label conditioning width C")
+    dit_group.add_argument("--dit-num-layers", type=int, default=6, help="Number of DiTBlock stacks")
+    dit_group.add_argument("--dit-num-heads", type=int, default=8, help="Self-attention heads for DiT")
+    dit_group.add_argument("--dit-ff-multiplier", type=int, default=4, help="FFN multiplier for DiT")
+    dit_group.add_argument("--dit-dropout", type=float, default=0.1, help="Dropout rate for DiT")
+    dit_group.add_argument("--dit-num-classes", type=int, default=2, help="Number of classes for conditioning")
+    dit_group.add_argument("--cfg-dropout-prob", type=float, default=0.10, help="Probability to drop label for CFG")
+    
+    # Diffusion Schedule
+    diff_group = parser.add_argument_group("Model - Diffusion Schedule")
+    diff_group.add_argument("--timesteps", type=int, default=1000, help="Total diffusion steps")
+    diff_group.add_argument("--schedule", type=str, default="cosine", choices=["cosine", "linear"], help="Beta schedule")
+    diff_group.add_argument("--beta-start", type=float, default=1e-4, help="Beta start (linear only)")
+    diff_group.add_argument("--beta-end", type=float, default=0.02, help="Beta end (linear only)")
+    
+    # DiT Training
+    train_dit_group = parser.add_argument_group("Training - DiT Specific")
+    train_dit_group.add_argument("--max-grad-norm", type=float, default=1.0, help="Gradient clipping threshold")
+    train_dit_group.add_argument("--warmup-epochs", type=int, default=5, help="Linear LR warmup epochs")
+    train_dit_group.add_argument("--unfreeze-encoder", action="store_false", dest="freeze_encoder", help="Fine-tune encoder weights instead of freezing them")
+    train_dit_group.add_argument("--vqvae-checkpoint", type=str, default=None, help="Path to pretrained VQ-VAE .pt file")
+    train_dit_group.set_defaults(freeze_encoder=True)
+    
+    return parser
+
+
+def get_dit_args():
+    """Parse and return command-line arguments for Latent Diffusion."""
+    return get_dit_parser().parse_args()
+
+
+def create_dit_config_from_args(args):
+    """Convert command-line arguments to DiTConfig object."""
+    from latent_diffusion.config import DiTConfig
+    
+    return DiTConfig(
+        hidden_dim=args.dit_hidden_dim,
+        cond_dim=args.dit_cond_dim,
+        num_layers=args.dit_num_layers,
+        num_heads=args.dit_num_heads,
+        ff_multiplier=args.dit_ff_multiplier,
+        dropout=args.dit_dropout,
+        num_classes=args.dit_num_classes,
+        cfg_dropout_prob=args.cfg_dropout_prob,
+        timesteps=args.timesteps,
+        schedule=args.schedule,
+        beta_start=args.beta_start,
+        beta_end=args.beta_end,
+        num_epochs=args.num_epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        max_grad_norm=args.max_grad_norm,
+        warmup_epochs=args.warmup_epochs,
+        freeze_encoder=args.freeze_encoder,
+        vqvae_checkpoint=args.vqvae_checkpoint,
+        seed=args.seed,
+        device=args.device,
+        output_dir=str(args.output_dir),
+        log_freq=args.log_freq,
+        checkpoint_freq=args.checkpoint_freq,
+        save_best=args.save_best,
+        use_wandb=args.use_wandb,
+        wandb_project=args.wandb_project,
+        wandb_run_name=args.wandb_run_name,
+        debug=args.debug,
+        debug_size=args.debug_size,
+    )
 
 if __name__ == "__main__":
     args = get_args()
