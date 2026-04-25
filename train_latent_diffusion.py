@@ -5,6 +5,7 @@ import json
 import logging
 import math
 from dataclasses import asdict, dataclass, field
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -28,6 +29,8 @@ from vq_vae.vq_vae import VQ_VAE
 from vq_vae.config import VQVAEConfig
 
 from data.data import AmexDataset
+from mmd.kernels import SignatureKernel
+from mmd.loss import mmd_loss
 
 def build_latent_diffusion_model(
     vqvae_cfg: VQVAEConfig,
@@ -64,7 +67,7 @@ def build_latent_diffusion_model(
             raise FileNotFoundError(f"VQ-VAE checkpoint not found: {ckpt_path}")
 
         logger.info(f"Loading pretrained VQ-VAE weights from: {ckpt_path}")
-        ckpt = torch.load(ckpt_path, map_location=device)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         state = ckpt.get("model_state_dict", ckpt)
 
         vq_vae.load_state_dict(state, strict=True)
@@ -72,7 +75,6 @@ def build_latent_diffusion_model(
     else:
         logger.warning(
             "No VQ-VAE checkpoint provided — VQ-VAE initialized from scratch. "
-            "For best results, train VQ-VAE first, then pass its checkpoint here."
         )
 
     # ── 3. Build DiT noise predictor ──────────────────────────────────────────
@@ -182,7 +184,6 @@ def create_dataloaders(
         customer_df=val_customers,
         db_path=str(args.db_path),
         fill_dict=train_dataset.fill_dict,
-        transformer=train_dataset.transformer,
         max_seq_len=args.max_seq_len,
     )
 
@@ -264,7 +265,7 @@ def train_one_epoch(
     running_loss = 0.0
     n_batches    = 0
 
-    pbar = tqdm(loader, desc=f"Epoch {epoch+1} [Train]", leave=False)
+    pbar = tqdm(loader, desc=f"Epoch {epoch+1} [Train]", dynamic_ncols=True)
 
     for step, batch in enumerate(pbar):
         # ── Unpack batch ──────────────────────────────────────────────────────
@@ -313,21 +314,25 @@ def validate_one_epoch(
     device: torch.device,
     epoch: int,
     logger: logging.Logger,
+    dataset: AmexDataset,
     wandb_run=None,
 ) -> Dict[str, float]:
     """
     Evaluate DiT on the validation set (no gradient updates).
 
     Returns:
-        dict: {"loss": float}
+        dict: {"loss": float, "mmd": float}
     """
     model.eval()
     running_loss = 0.0
     n_batches    = 0
 
-    pbar = tqdm(loader, desc=f"Epoch {epoch+1} [Val]  ", leave=False)
+    pbar = tqdm(loader, desc=f"Epoch {epoch+1} [Val]  ", dynamic_ncols=True)
+    
+    mmd_value = None
+    kernel = SignatureKernel(n_levels=1)
 
-    for batch in pbar:
+    for batch_idx, batch in enumerate(pbar):
         x, time_tensor, y = batch
         x           = x.to(device, dtype=torch.float32, non_blocking=True)
         time_tensor = time_tensor.to(device, dtype=torch.float32, non_blocking=True)
@@ -338,14 +343,52 @@ def validate_one_epoch(
 
         running_loss += loss_val
         n_batches    += 1
-        pbar.set_postfix({"val_loss": f"{loss_val:.4f}"})
+        
+        postfix = {"val_loss": f"{loss_val:.4f}"}
+        
+        # Calculate generation MMD on the first validation batch
+        if batch_idx == 0:
+            with torch.no_grad():
+                z_e = model.vq_vae.encode(x, y, time_tensor=time_tensor)["z"]
+            
+            seq_len = z_e.shape[1]
+            latent_dim = z_e.shape[2]
+            
+            # Generate a smaller batch of 64 sequences to keep validation fast
+            sample_size = min(x.shape[0], 64)
+            y_sample = y[:sample_size] if y is not None else None
+            x_real_sample = x[:sample_size]
+            
+            z_samples = model.sample_latents(
+                batch_size=sample_size,
+                seq_len=seq_len,
+                latent_dim=latent_dim,
+                device=device,
+                y=y_sample,
+                cfg_scale=1.0,
+                show_progress=False
+            )
+            x_gen = model.decode(z_samples)
+
+            try:
+                mmd_tensor = mmd_loss(x_real_sample, x_gen, kernel)
+                mmd_value = mmd_tensor.item()
+                postfix["mmd"] = f"{mmd_value:.4f}"
+            except Exception as e:
+                logger.error(f"Error computing MMD: {e}")
+                mmd_value = float('nan')
+
+        pbar.set_postfix(postfix)
 
     val_loss = running_loss / max(n_batches, 1)
 
     if wandb_run is not None:
-        wandb_run.log({"val/step_loss": val_loss, "epoch": epoch + 1})
+        log_dict = {"val/step_loss": val_loss, "epoch": epoch + 1}
+        if mmd_value is not None:
+            log_dict["val/mmd"] = mmd_value
+        wandb_run.log(log_dict)
 
-    return {"loss": val_loss}
+    return {"loss": val_loss, "mmd": mmd_value}
 
 
 # ─── Checkpointing ────────────────────────────────────────────────────────────
@@ -495,7 +538,8 @@ def train_latent_diffusion(
         # ── Validate ──────────────────────────────────────────────────────────
         val_metrics = validate_one_epoch(
             model, val_loader, device,
-            epoch=epoch, logger=logger, wandb_run=wandb_run,
+            epoch=epoch, logger=logger, dataset=val_loader.dataset,
+            wandb_run=wandb_run,
         )
 
         scheduler.step()
@@ -505,17 +549,21 @@ def train_latent_diffusion(
         logger.info(
             f"Epoch {epoch+1:>4d}/{dit_cfg.num_epochs} | "
             f"train_loss={train_metrics['loss']:.5f} | "
-            f"val_loss={val_metrics['loss']:.5f} | "
+            f"val_loss={val_metrics['loss']:.5f} | " +
+            (f"val_mmd={val_metrics['mmd']:.4f} | " if val_metrics.get("mmd") is not None else "") +
             f"lr={current_lr:.3e}"
         )
 
         if wandb_run is not None:
-            wandb_run.log({
+            log_dict = {
                 "epoch":             epoch + 1,
                 "train/epoch_loss":  train_metrics["loss"],
                 "val/epoch_loss":    val_metrics["loss"],
                 "learning_rate":     current_lr,
-            })
+            }
+            if val_metrics.get("mmd") is not None:
+                log_dict["val/epoch_mmd"] = val_metrics["mmd"]
+            wandb_run.log(log_dict)
 
         epoch_record = {
             "epoch":  epoch,

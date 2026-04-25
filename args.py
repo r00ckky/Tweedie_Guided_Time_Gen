@@ -50,7 +50,18 @@ def get_base_parser():
         action="store_true",
         help="Whether to use class imbalance handling (e.g., weighted sampling)",
     )
-    
+    data_group.add_argument(
+        "--transformer_path",
+        type=Path,
+        default=Path("quantile_transformer.pkl"),
+        help="Path to saved QuantileTransformer for data preprocessing",
+    )
+    data_group.add_argument(
+        "--fill-dict-path",
+        type=Path,
+        default=Path("fill_dict.pkl"),
+        help="Path to saved fill dictionary for handling missing values",
+    )
     # Model arguments - Patch Embedding
     model_group = parser.add_argument_group("Model - Patch Embedding")
     model_group.add_argument(
@@ -76,6 +87,15 @@ def get_base_parser():
         type=int,
         default=256,
         help="Output dimension of patch embedding",
+    )
+    
+    # Model arguments - Latent Space (for VAE)
+    latent_group = parser.add_argument_group("Model - Latent Space (VAE)")
+    latent_group.add_argument(
+        "--latent-dim",
+        type=int,
+        default=256,
+        help="Dimension of latent space (for VAE)",
     )
     
     # Model arguments - Vector Quantization
@@ -210,7 +230,13 @@ def get_base_parser():
         "--commitment-loss-weight",
         type=float,
         default=0.25,
-        help="Weight for commitment loss",
+        help="Weight for commitment loss (VQ-VAE)",
+    )
+    loss_group.add_argument(
+        "--kl-loss-weight",
+        type=float,
+        default=1.0,
+        help="Weight for KL divergence loss (VAE)",
     )
     loss_group.add_argument(
         "--classification-loss-weight",
@@ -376,6 +402,71 @@ def create_config_from_args(args):
     )
     return config
 
+def get_ncsn_parser():
+    """Build the argument parser for NCSN."""
+    parser = get_base_parser()
+    parser.description = "Train Noise Conditional Score Network (NCSN) on AMEX time-series data"
+    
+    ncsn_group = parser.add_argument_group("Model - NCSN Specific")
+    ncsn_group.add_argument(
+        "--vq-vae-checkpoint",
+        type=str,
+        default=None,
+        help="Path to pretrained VQ-VAE .pt file for NCSN training",
+    )
+    ncsn_group.add_argument(
+        "--denoiser-hidden-dim",
+        type=int,
+        default=256,
+        help="Hidden dimension for the TabularDenoiser MLP",
+    )
+    ncsn_group.add_argument(
+        "--num-scales",
+        type=int,
+        default=10,
+        help="Number of noise scales for NCSN",
+    )
+    ncsn_group.add_argument(
+        "--sigma-max", 
+        type=float,
+        default=1.0,
+        help="Maximum noise scale (sigma_max) for NCSN",
+    )
+    ncsn_group.add_argument(
+        "--sigma-min",
+        type=float,
+        default=0.01,
+        help="Minimum noise scale (sigma_min) for NCSN",
+    )
+    ncsn_group.add_argument(
+        "--ncsn_weights",
+        type=str,
+        default=None,
+        help="Weights to NCSN"
+    )
+    ncsn_group.add_argument(
+        "--ncsn_num_blocks",
+        type=int,
+        default=3,
+        help="Number of SeqResBlock layers in the TabularDenoiser",
+    )
+    return parser
+
+def create_ncsn_config_from_args(args):
+    from NCSN.config import NCSNConfig
+    config = NCSNConfig(
+        vq_vae_checkpoint=args.vq_vae_checkpoint,
+        denoiser_hidden_dim=args.denoiser_hidden_dim,
+        checkpoint_dir=str(args.output_dir),
+        num_epochs=args.num_epochs,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        sigma_max=args.sigma_max,
+        sigma_min=args.sigma_min,
+        num_scales=args.num_scales,
+        ncsn_num_blocks=args.ncsn_num_blocks,
+    )
+    return config
 
 def get_dit_parser():
     """Build the argument parser for Latent Diffusion / DiT."""

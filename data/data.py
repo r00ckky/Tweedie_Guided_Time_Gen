@@ -5,6 +5,7 @@ import numpy as np
 import sqlite3
 from sklearn.preprocessing import QuantileTransformer
 import warnings
+import joblib
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -68,7 +69,9 @@ class AmexDataset(Dataset):
         print("Fitting Quantile Transformer (This will be instant)...")
         self.transformer.fit(sample_filled)
         print("Fit complete!")
-        
+
+        joblib.dump(self.transformer, 'quantile_transformer.pkl')
+        joblib.dump(self.fill_dict, 'fill_dict.pkl')
         return self.fill_dict, self.transformer
 
     def __len__(self):
