@@ -1,5 +1,5 @@
 from .model import AmexGuidedGenerator
-from .denoiser import TabularDenoiser
+from .dit_denoiser import TabularDenoiser
 from .config import NCSNConfig
 
 __all__= [

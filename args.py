@@ -450,6 +450,13 @@ def get_ncsn_parser():
         default=3,
         help="Number of SeqResBlock layers in the TabularDenoiser",
     )
+    ncsn_group.add_argument(
+        "--denoiser-model",
+        type=str,
+        default="dit",
+        choices=["dit", "conv_next", "conv", "resnet"],
+        help="Architecture for the NCSN denoiser",
+    )
     return parser
 
 def create_ncsn_config_from_args(args):
@@ -465,6 +472,7 @@ def create_ncsn_config_from_args(args):
         sigma_min=args.sigma_min,
         num_scales=args.num_scales,
         ncsn_num_blocks=args.ncsn_num_blocks,
+        denoiser_model=args.denoiser_model,
     )
     return config
 

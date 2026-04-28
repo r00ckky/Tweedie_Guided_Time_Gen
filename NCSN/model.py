@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple
 
-from .denoiser import TabularDenoiser
 from vq_vae import VQ_VAE
 from .config import NCSNConfig
 
@@ -17,6 +16,16 @@ class AmexGuidedGenerator(nn.Module):
             param.requires_grad = False
         
         flat_dim = self.vqvae.config.input_dim 
+        if ncsn_config.denoiser_model == "dit":
+            from .dit_denoiser import TabularDenoiser
+        elif ncsn_config.denoiser_model == "conv_next":    
+            from .conv_next_denoiser import TabularDenoiser
+        elif ncsn_config.denoiser_model == "conv":
+            from .conv_denoiser import TabularDenoiser
+        elif ncsn_config.denoiser_model == "resnet":
+            from .denoiser import TabularDenoiser
+        else:
+            raise ValueError(f"Unsupported denoiser model: {ncsn_config.denoiser_model}")
         self.denoiser = TabularDenoiser(
             input_dim=flat_dim, 
             hidden_dim=ncsn_config.denoiser_hidden_dim,

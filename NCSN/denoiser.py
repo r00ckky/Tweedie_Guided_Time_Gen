@@ -44,6 +44,7 @@ class TabularDenoiser(nn.Module):
             SinusoidalPosEmb(time_dim),
             nn.Linear(time_dim, hidden_dim),
             nn.SiLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim),
         )
         
