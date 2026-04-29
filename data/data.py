@@ -1,3 +1,5 @@
+import os
+import json
 import torch
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
@@ -134,3 +136,47 @@ class AmexDataset(Dataset):
             X_tensor = torch.nan_to_num(X_tensor, nan=0.0) 
             
         return X_tensor, time_tensor, y_tensor
+    
+class SyntheticAmexDataset(Dataset):
+    def __init__(self, data_dir="synthetic_data"):
+        self.data_dir = data_dir
+        
+        with open(os.path.join(data_dir, 'meta.json'), 'r') as f:
+            self.meta = json.load(f)
+            
+        self.total_samples = self.meta["total_samples"]
+        self.seq_len = self.meta["seq_len"]
+        self.input_dim = self.meta["input_dim"]
+        self.fake_x = np.memmap(
+            os.path.join(data_dir, 'fake_x.npy'), 
+            dtype='float32', mode='c', 
+            shape=(self.total_samples, self.seq_len, self.input_dim)
+        )
+        
+        self.fake_time = np.memmap(
+            os.path.join(data_dir, 'fake_time.npy'), 
+            dtype='float32', mode='c', 
+            shape=(self.total_samples, self.seq_len, 1)
+        )
+        
+        self.fake_targets = np.memmap(
+            os.path.join(data_dir, 'fake_targets.npy'), 
+            dtype='float32', mode='c', 
+            shape=(self.total_samples,)
+        )
+
+    def __len__(self):
+        return self.total_samples
+
+    def __getitem__(self, idx):
+        # Slice the numpy memmap (reads only these specific bytes from disk)
+        x_np = self.fake_x[idx]
+        time_np = self.fake_time[idx]
+        y_np = self.fake_targets[idx]
+        
+        # Convert to PyTorch tensors on the fly
+        x_tensor = torch.from_numpy(x_np)
+        time_tensor = torch.from_numpy(time_np)
+        y_tensor = torch.tensor(y_np, dtype=torch.float32)
+        
+        return x_tensor, time_tensor, y_tensor
