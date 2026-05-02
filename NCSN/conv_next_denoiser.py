@@ -77,7 +77,8 @@ class TabularDenoiser(nn.Module):
     """
     def __init__(self, input_dim, hidden_dim=512, num_blocks=6, dropout_rate=0.1):
         super().__init__()
-        
+
+        # time embedding layer
         time_dim = hidden_dim
         self.time_mlp = nn.Sequential(
             SinusoidalPosEmb(hidden_dim // 4),
@@ -85,7 +86,8 @@ class TabularDenoiser(nn.Module):
             nn.SiLU(),
             nn.Linear(time_dim, time_dim),
         )
-        
+
+        # input projection layer
         self.input_proj = nn.Conv1d(input_dim, hidden_dim, kernel_size=1)
         
         self.blocks = nn.ModuleList([
@@ -105,7 +107,7 @@ class TabularDenoiser(nn.Module):
         # Transpose to (Batch, Channels, Seq_Len)
         x = x.transpose(1, 2) 
         
-        # Get Time Embeddings
+        # Time Embeddings
         t_emb = self.time_mlp(t)
         
         # Initial Projection
