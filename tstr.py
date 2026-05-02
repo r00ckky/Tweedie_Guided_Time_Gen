@@ -341,8 +341,8 @@ def generate_synthetic_dataset_to_disk(
     logger.info(f"Generation complete. Data safely written to {save_dir}/")
     return save_dir
 
-def save_checkpoint(model: AmexGuidedGenerator, optimizer: torch.optim.Optimizer, epoch: int, config: NCSNConfig, logger: logging.Logger):
-    checkpoint_dir = Path(config.checkpoint_dir)
+def save_checkpoint(args, model, optimizer: torch.optim.Optimizer, epoch: int, config: NCSNConfig, logger: logging.Logger):
+    checkpoint_dir = Path(args.output_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = checkpoint_dir / f"ncsn_epoch_{epoch}.pth"
     
@@ -362,12 +362,12 @@ def train_model(args, model, optimizer, train_loader, val_loader, logger, wandb_
     for epoch in range(start_epoch, args.num_epochs + 1):
         train_metrics = train_one_epoch(args, model, optimizer, train_loader, device, epoch, logger, wandb_run)
         val_metrics = validate_one_epoch(args, model, val_loader, device, epoch, logger)
-        
+
         if wandb_run is not None:
             wandb_run.log({**train_metrics, **val_metrics})
         
         if epoch % args.checkpoint_freq == 0:
-            save_checkpoint(model, optimizer, epoch, model.config, logger)
+            save_checkpoint(args, model, optimizer, epoch, model.config, logger)
     
     logger.info(f"\nTrain Loss: {train_metrics['train/loss']:.6f}")
 
