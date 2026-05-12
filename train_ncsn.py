@@ -193,11 +193,17 @@ def train_one_epoch(
         sigma = sigma.view(-1, 1, 1)
         noise = torch.randn_like(features)
         noisy_features = features + (noise * sigma)
-        score_pred = model.get_data_score(noisy_features, t)
-        target_score = -noise / sigma
-        
-        loss = torch.mean((sigma ** 2) * (score_pred - target_score) ** 2)
-        
+        if not args.train_classifier:
+            score_pred = model.get_data_score(noisy_features, t)
+            target_score = -noise / sigma
+            
+            loss = torch.mean((sigma ** 2) * (score_pred - target_score) ** 2)
+        else:
+            score_pred, cls_loss = model(noisy_features, t)
+            target_score = -noise / sigma
+            
+            loss = torch.mean((sigma ** 2) * (score_pred - target_score) ** 2) + cls_loss
+            
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=getattr(args, 'max_grad_norm', 1.0))
         optimizer.step()

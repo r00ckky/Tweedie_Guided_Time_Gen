@@ -311,6 +311,33 @@ class VQ_VAE(nn.Module):
         for param in self.parameters():
             param.requires_grad = True
     
+    def prepare_for_classifier_training(self):
+        """
+        Freezes the parts of the model not used for classification (Decoder and Vector Quantizer).
+        The Encoder and PatchEmbedding remain trainable to adapt to the classification task.
+        """
+        # Freeze Decoder
+        for param in self.decoder.parameters():
+            param.requires_grad = False
+        self.decoder.eval()
+
+        # Freeze Vector Quantizer (the codebook)
+        for param in self.vector_quantizer.parameters():
+            param.requires_grad = False
+        self.vector_quantizer.eval()
+
+        # Ensure Encoder and Patch Embedding are trainable
+        for param in self.encoder.parameters():
+            param.requires_grad = True
+        for param in self.patch_embedding.parameters():
+            param.requires_grad = True
+        
+        # Ensure the output projection for reconstruction is also frozen
+        for param in self.output_projection.parameters():
+            param.requires_grad = False
+            
+        print("✓ Model prepared: Encoder/PatchEmbed trainable, Decoder/VQ frozen.")
+
     def get_trainable_parameters_count(self) -> int:
         """Get number of trainable parameters."""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)

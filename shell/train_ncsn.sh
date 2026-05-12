@@ -26,6 +26,7 @@ BATCH_SIZE=256
 VAL_BATCH_SIZE=256
 NCSN_NUM_BLOCKS=3
 DENOISER_MODEL="dit"  # Options: "dit", "conv_next", "conv", "resnet"
+TRAIN_CLASSFIER = true
 
 # 5. Original VQ-VAE Architecture Config 
 MAX_SEQ_LEN=14
@@ -111,5 +112,6 @@ CUDA_VISIBLE_DEVICES=2 python train_ncsn.py \
     $([ -f "${NCSN_WEIGHTS}" ] && echo "--ncsn_weights ${NCSN_WEIGHTS}") \
     --ncsn_num_blocks ${NCSN_NUM_BLOCKS} \
     --denoiser-model ${DENOISER_MODEL} \
+    $([ "${TRAIN_CLASSIFIER}" = true ] && echo "--train-classifier") \
 
 echo "NCSN Training completed! Checkpoints saved to ${CHECKPOINT_DIR}"

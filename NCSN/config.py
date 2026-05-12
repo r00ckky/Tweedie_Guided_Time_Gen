@@ -15,3 +15,4 @@ class NCSNConfig:
     weight_decay: float = 1e-4
     ncsn_num_blocks: int = 3
     denoiser_model:str = "dit"  # Options: "dit", "conv_next", "conv", "resnet"
+    train_classifier:bool=False

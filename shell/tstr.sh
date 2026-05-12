@@ -52,15 +52,15 @@ SEED=42
 DEVICE="cuda"
 CLASS_IMBALANCE=true
 
-CHECKPOINT_DIR="/home/chaitanya-kohli/Amex/TimeVQDM/checkpoints/${DENOISER_MODEL}_NCSN_denoiser_${DENOISER_HIDDEN_DIM}_l_${NCSN_NUM_BLOCKS}"
+CHECKPOINT_DIR="/home/chaitanya-kohli/Amex/TimeVQDM/checkpoints/guide_0.5_${DENOISER_MODEL}_NCSN_denoiser_${DENOISER_HIDDEN_DIM}_l_${NCSN_NUM_BLOCKS}"
 mkdir -p "${CHECKPOINT_DIR}"
 
 WANDB_PROJECT="syth-amex-tstr"
-WANDB_RUN_NAME="${DENOISER_MODEL}_NCSN_denoiser_${DENOISER_HIDDEN_DIM}_l_${NCSN_NUM_BLOCKS}_$(date +%d%m_%H%M%S)"
+WANDB_RUN_NAME="guide_0.5_${DENOISER_MODEL}_NCSN_denoiser_${DENOISER_HIDDEN_DIM}_l_${NCSN_NUM_BLOCKS}_$(date +%d%m_%H%M%S)"
 WANDB_SAVE_DIR="${CHECKPOINT_DIR}/wandb"
 mkdir -p "${WANDB_SAVE_DIR}"
 
-NCSN_WEIGHTS="/home/chaitanya-kohli/Amex/TimeVQDM/checkpoints/conv_next_NCSN_denoiser_512_l_3/ncsn_epoch_46.pth"
+NCSN_WEIGHTS="/home/chaitanya-kohli/Amex/TimeVQDM/checkpoints/conv_next_NCSN_denoiser_512_l_3/tabular_denoiser_model.pth"
 
 cd /home/chaitanya-kohli/Amex/TimeVQDM/
 export PYTHONPATH="/home/chaitanya-kohli/Amex/TimeVQDM:${PYTHONPATH:-}"

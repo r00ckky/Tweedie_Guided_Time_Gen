@@ -355,6 +355,13 @@ def get_base_parser():
         default=None,
         help="Path to checkpoint to resume training from",
     )
+
+    tstr_group = parser.add_argument_group('TSTR')
+    tstr_group.add_argument(
+        "--tstr",
+        type="store_true",
+        help="Train on Synthetic and Test on Real"
+    )
     
     return parser
 
@@ -457,6 +464,11 @@ def get_ncsn_parser():
         choices=["dit", "conv_next", "conv", "resnet"],
         help="Architecture for the NCSN denoiser",
     )
+    ncsn_group.add_argument(
+        "--train-classifier",
+        action='store_true',
+        help="Flag to enable training of downstream classifier model."
+    )
     return parser
 
 def create_ncsn_config_from_args(args):
@@ -473,6 +485,7 @@ def create_ncsn_config_from_args(args):
         num_scales=args.num_scales,
         ncsn_num_blocks=args.ncsn_num_blocks,
         denoiser_model=args.denoiser_model,
+        train_classifier=args.train_classifier,
     )
     return config
 

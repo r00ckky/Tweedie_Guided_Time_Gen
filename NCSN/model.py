@@ -11,9 +11,11 @@ class AmexGuidedGenerator(nn.Module):
         self.config = ncsn_config
 
         self.vqvae = vqvae_model
-        self.vqvae.eval()
         for param in self.vqvae.parameters():
-            param.requires_grad = False
+            param.requires_grad = ncsn_config.train_classifier
+        
+        if ncsn_config.train_classifier:
+            self.vqvae.prepare_for_classifier_training()
         
         flat_dim = self.vqvae.config.input_dim 
         if ncsn_config.denoiser_model == "dit":
@@ -44,25 +46,36 @@ class AmexGuidedGenerator(nn.Module):
         sigma: torch.Tensor, 
         target_class: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Calculates guidance using Tweedie's formula to estimate x_0 before classifying.
-        """
-        with torch.enable_grad():
-            x_t = x_t.detach().requires_grad_(True)
-            
-            #Tweedie's Estimate for clean data (x_0)
-            x_0_hat = x_t + (sigma ** 2) * score_data.detach()            
-            x_0_hat = torch.clamp(x_0_hat, min=-5.2, max=5.2)
-            
-            encode_output = self.vqvae.encode(x_0_hat, y=target_class, time_tensor=time_tensor)
-            cls_loss = encode_output["classification_loss"] 
-            
-            if cls_loss is None:
-                raise ValueError("classification_loss returned None.")
+        if not self.config.train_classifier:
+            """
+            Calculates guidance using Tweedie's formula to estimate x_0 before classifying.
+            """
+            with torch.enable_grad():
+                x_t = x_t.detach().requires_grad_(True)
                 
-            grad = torch.autograd.grad(cls_loss, x_t)[0]
-            guidance_score = -grad
-            
+                #Tweedie's Estimate for clean data (x_0)
+                x_0_hat = x_t + (sigma ** 2) * score_data.detach()            
+                x_0_hat = torch.clamp(x_0_hat, min=-5.2, max=5.2)
+                
+                encode_output = self.vqvae.encode(x_0_hat, y=target_class, time_tensor=time_tensor)
+                cls_loss = encode_output["classification_loss"] 
+                
+                if cls_loss is None:
+                    raise ValueError("classification_loss returned None.")
+                    
+                grad = torch.autograd.grad(cls_loss, x_t)[0]
+                guidance_score = -grad
+
+        else:
+            with torch.no_grad():
+                x_t = x_t.detach().requires_grad_(True)
+                encode_output = self.vqvae.encode(x_0_hat, y=target_class, time_tensor=time_tensor)
+                cls_loss = encode_output['classification_loss']
+                if cls_loss is None:
+                    raise ValueError("classification_loss returned None.")
+                grad = torch.autograd.grad(cls_loss, x_t)[0]
+                guidance_score = -grad
+
         return guidance_score
 
     def get_sigma(self, t: torch.Tensor) -> torch.Tensor:
@@ -111,4 +124,24 @@ class AmexGuidedGenerator(nn.Module):
             x = x - (0.5 * score_data + guidance_scale * score_guide) * dt + noise
             
         return x
+
+    def forward(
+        self, 
+        x_t: torch.Tensor, 
+        t: torch.Tensor,
+        target_class: torch.Tensor,
+        time_tensor:torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Calculates both Score Matching Loss and Classification Loss on noisy data.
+        """
+        batch_size = x_t.shape[0]
+        device = x_t.device
+        
+        score_pred = self.get_data_score(x_t, t)
+        
+        encode_output = self.vqvae.encode(x_t, y=target_class, time_tensor=time_tensor)
+        cls_loss = encode_output["classification_loss"]
+        
+        return score_pred, cls_loss
     

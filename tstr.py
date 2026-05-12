@@ -285,7 +285,7 @@ def create_dataloaders(
     return train_loader, val_loader, train_dataset
 
 def generate_synthetic_dataset_to_disk(
-    ncsn_model, real_loader, logger:logging.Logger, device, save_dir="synthetic_data", steps=50, guidance_scale=2.0
+    ncsn_model, real_loader, logger:logging.Logger, device, save_dir="synthetic_data_0.5", steps=50, guidance_scale=0.5
 ):
     os.makedirs(save_dir, exist_ok=True)
     ncsn_model.eval()
